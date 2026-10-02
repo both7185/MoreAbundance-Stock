@@ -192,7 +192,9 @@ def daily_section() -> None:
     overrides = {
         row["รายการสินค้า"]: row["หมวดหมู่"]
         for _, row in edited_preview.iterrows()
-        if row["หมวดหมู่"] and row["หมวดหมู่"] != categorize(row["รายการสินค้า"], catalog)
+        # blank cells come back as None/NaN - only real text counts as a chosen category
+        if isinstance(row["หมวดหมู่"], str) and row["หมวดหมู่"].strip()
+        and row["หมวดหมู่"] != categorize(row["รายการสินค้า"], catalog)
     }
     if overrides:
         if st.button(f"💾 จำหมวดหมู่ที่แก้ไว้ใน catalog.json ({len(overrides)} รายการ)"):

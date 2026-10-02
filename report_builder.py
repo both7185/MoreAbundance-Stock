@@ -25,12 +25,28 @@ CATALOG_PATH = Path(__file__).with_name("catalog.json")
 # --------------------------------------------------------------------------- #
 # Catalog (categories + name/unit clean-up)
 # --------------------------------------------------------------------------- #
+def _is_category(v) -> bool:
+    """A real category is a non-empty string (not None / NaN / number)."""
+    return isinstance(v, str) and v.strip() != ""
+
+
 def load_catalog(path: Path = CATALOG_PATH) -> dict:
     with open(path, encoding="utf-8") as f:
-        return json.load(f)
+        catalog = json.load(f)
+    # ignore broken entries (e.g. NaN saved from an empty table cell) instead of crashing
+    catalog["items"] = {k: v for k, v in catalog.get("items", {}).items() if _is_category(v)}
+    catalog["keyword_rules"] = [
+        r for r in catalog.get("keyword_rules", [])
+        if isinstance(r, (list, tuple)) and len(r) == 2 and _is_category(r[0]) and _is_category(r[1])
+    ]
+    catalog["category_order"] = [c for c in catalog.get("category_order", []) if _is_category(c)]
+    if not isinstance(catalog.get("default_category"), str):
+        catalog["default_category"] = ""
+    return catalog
 
 
 def save_catalog(catalog: dict, path: Path = CATALOG_PATH) -> None:
+    catalog = dict(catalog, items={k: v for k, v in catalog.get("items", {}).items() if _is_category(v)})
     with open(path, "w", encoding="utf-8") as f:
         json.dump(catalog, f, ensure_ascii=False, indent=2)
 
@@ -93,7 +109,11 @@ def aggregate(
             key = (name, unit, it.unit_price)
             row = groups.get(key)
             if row is None:
-                cat = category_overrides.get(name) or categorize(name, catalog)
+                cat = category_overrides.get(name)
+                if not _is_category(cat):
+                    cat = categorize(name, catalog)
+                if not _is_category(cat):
+                    cat = ""
                 row = groups[key] = SummaryRow(cat, name, unit, it.unit_price)
             row.qty_by_date[d] = float(Decimal(str(row.qty_by_date.get(d, 0.0))) + Decimal(str(it.qty)))
 
