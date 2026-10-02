@@ -1,0 +1,23 @@
+# Python virtual environment (machine-specific, rebuilt by run.bat)
+.venv/
+venv/
+env/
+
+# Python cache
+__pycache__/
+*.py[cod]
+
+# Real PO data / generated reports - never push to GitHub
+*.xlsx
+*.xls
+*.pdf
+
+# Streamlit local secrets
+.streamlit/secrets.toml
+
+# OS / editor junk
+.DS_Store
+Thumbs.db
+desktop.ini
+.vscode/
+.idea/

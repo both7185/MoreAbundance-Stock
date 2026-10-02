@@ -19,6 +19,18 @@ python -m venv .venv
 .venv/bin/streamlit run app.py
 ```
 
+## Monthly total tab (📅 รวมยอดทั้งเดือน)
+
+Upload all of a month's POs (many PDFs, or one `.zip` of the folder). You get an Excel file with two columns,
+**ใบสั่งซื้อ** (the PO name from the file name) and **ยอดรวม**, plus **รวมทั้งเดือน** (`=SUM`) at the bottom.
+
+* `(อัพเดทใหม่)` / `(อัปเดตใหม่)` in a file name is ignored for ordering and removed from the shown name.
+  For example, `PO 14 ก.ย. 69 (มื้อเย็น - อัพเดทใหม่)` → `PO 14 ก.ย. 69 (มื้อเย็น)`.
+* Rows are sorted by the date in the file name. On the same date the order is: no bracket → `(มื้อเย็น)` → `(กล่องโฟม)` → anything else.
+  If a file name has no date, the PDF's ใช้ในวันที่ is used instead. The order lives in `SUFFIX_ORDER` in `monthly_report.py`.
+* ยอดรวม is the printed `เป็นเงิน` of each PO by default. A switch uses the sum of qty × price instead.
+  Some POs round their printed total to whole baht, and the screen flags those.
+
 ## Stack
 
 | Layer | Choice | Why |
