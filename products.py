@@ -210,6 +210,17 @@ def suggest(name: str, rows: list[dict], n: int = 1, cutoff: float = 0.0) -> lis
     return sorted(scored, key=lambda s: -s[1])[:n]
 
 
+def suggest_category(rows: list[dict], shop: str = "", sup_no: str = "") -> str:
+    """Most common หมวดหมู่ among products of the same ร้านหลัก (else the same Sup no.)."""
+    from collections import Counter
+    for key, value in ((COL_SUPPLIER, shop), (COL_SUP, sup_no)):
+        if value:
+            c = Counter(r[COL_CAT] for r in rows if r.get(key) == value and r.get(COL_CAT))
+            if c:
+                return c.most_common(1)[0][0]
+    return ""
+
+
 def add_alias(rows: list[dict], product_name: str, alias: str) -> bool:
     for r in rows:
         if r[COL_NAME] == product_name:
@@ -291,8 +302,9 @@ def github_config(secrets) -> dict | None:
         [github]
         token  = "github_pat_..."     # fine-grained token, Contents: read & write on this repo
         repo   = "owner/repo"
-        branch = "main"               # optional
+        branch = "main"               # optional: code branch (the data branch starts from it)
         path   = "products.csv"       # optional
+        data_branch = "data"          # optional: where the app saves products.csv / sup_codes.json
     """
     try:
         gh = dict(secrets["github"])

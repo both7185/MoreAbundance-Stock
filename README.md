@@ -56,10 +56,25 @@ Upload all of a month's POs (many PDFs, or one `.zip` of the folder). You get an
 The **unmatched-items panel** in the daily tab uses the same dropdowns. Either pick an existing shop, or type a new shop name and choose
 Sup ตัวที่ 1 / 2. The preview table shows the resulting Sup no. before you save.
 
-### Keep edits on Streamlit Community Cloud (GitHub token)
+### Where the website keeps its data (GitHub `data` branch)
 
-The disk on Streamlit Cloud is temporary, so edits made on the website are lost when the app restarts.
-To keep them, let the app commit `products.csv` back to your repo:
+The disk on Streamlit Cloud is temporary, and it is reset to the files on `main` at every deploy.
+So the app keeps the editable data in a **separate branch, `data`**:
+
+| branch | contains | written by |
+|---|---|---|
+| `main` | code, plus the starting copy of `products.csv` / `sup_codes.json` | you (`git push`) |
+| `data` | the live `products.csv` and `sup_codes.json` | the app, on every 💾 save |
+
+* The app downloads `data` when a page opens (at most once a minute) and commits there on every save.
+  Pushing code to `main` never touches it, and a commit to `data` does not redeploy the app.
+* The `data` branch is created automatically from `main` the first time the app runs with the secrets below.
+* The history of every data change is on GitHub: switch to the `data` branch → *Commits*.
+* ⚠️ After that, editing `products.csv` / `sup_codes.json` on your PC and pushing to `main` has **no effect** on the website.
+  Change data on the website instead (the 🗂️ / 🏷️ tabs, including Excel import).
+  To get the website's data onto your PC, run `git fetch` then `git checkout origin/data -- products.csv sup_codes.json`.
+
+Setup (once):
 
 1. On GitHub, go to **Settings → Developer settings → Personal access tokens → Fine-grained tokens → Generate new token**.
    Under Repository access choose *Only select repositories* (this repo). Under Permissions, set **Contents: Read and write**.
@@ -68,13 +83,12 @@ To keep them, let the app commit `products.csv` back to your repo:
    [github]
    token  = "github_pat_xxxxxxxx"
    repo   = "your-name/your-repo"
-   branch = "main"
-   path   = "products.csv"
+   branch = "main"            # code branch
+   path   = "products.csv"    # folder of the data files in the repo
+   data_branch = "data"       # optional, default "data"
    ```
-3. Each save now creates a commit (`products.csv` and `sup_codes.json`, in the same folder as `path`). Before you push from your own computer next time, run **`git pull`** first,
-   or the push will be rejected because the website added commits.
 
-When running locally (`run.bat`), saves go to `products.csv` in the folder. Push it as usual.
+When running locally (`run.bat`) without secrets, the files in the folder are the data.
 
 ## Stack
 
@@ -93,6 +107,7 @@ When running locally (`run.bat`), saves go to `products.csv` in the folder. Push
 | `po_extractor.py` | PDF → `PurchaseOrder` (PO no., วันที่, ใช้ในวันที่, items, printed total) |
 | `report_builder.py` | Group by (name, unit, price), split qty by date, build the styled workbook |
 | `catalog.json` | Name/unit aliases (e.g. ปี๊บ → ปิ๊บ) |
+| `datastore.py` | Sync of the data files with the GitHub `data` branch |
 | `products.py` | Product list logic: matching, Sup no. sort, Excel import/export, GitHub save |
 | `products.csv` | **Product list (Data)**: หมวดหมู่, รายการ, หน่วยนับ, ร้านหลัก, Sup no., ชื่อใน PO. Edited in the 🗂️ tab |
 | `sup_codes.py` | Sup no. codes: meanings, shop list, next running number, Excel import/export |

@@ -45,6 +45,7 @@ class SummaryRow:
     unit_price: float
     sup_no: str = ""        # used for sorting only - not written to the Excel
     matched: bool = False   # found in products.csv
+    product_name: str = ""  # name of the matched product in products.csv
     po_names: set = field(default_factory=set)   # names exactly as printed in the POs
     qty_by_date: dict[date, float] = field(default_factory=dict)
 
@@ -59,6 +60,16 @@ class Summary:
     @property
     def unmatched(self) -> list[SummaryRow]:
         return [r for r in self.rows if not r.matched]
+
+    @property
+    def missing_category(self) -> list[SummaryRow]:
+        """In products.csv but without หมวดหมู่ (one row per product)."""
+        seen, out = set(), []
+        for r in self.rows:
+            if r.matched and not r.category and r.product_name not in seen:
+                seen.add(r.product_name)
+                out.append(r)
+        return out
 
 
 def aggregate(
@@ -102,6 +113,7 @@ def aggregate(
                     category=info.category if info else "",
                     name=name, unit=unit, unit_price=it.unit_price,
                     sup_no=info.sup_no if info else "", matched=info is not None,
+                    product_name=info.name if info else "",
                 )
                 order_of[key] = info.order if info else 10**9
             row.po_names.add(it.name)
