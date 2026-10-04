@@ -10,8 +10,23 @@ Tabs
 """
 from __future__ import annotations
 
+import importlib
+import os
+import sys
+
 import pandas as pd
 import streamlit as st
+
+# Streamlit Community Cloud re-reads app.py on every run but keeps the other modules in memory,
+# so after a `git push` the old report_builder.py / products.py ... would keep running until a reboot.
+# Reload any of our modules whose file changed since it was loaded (dependencies first).
+for _name in ("po_extractor", "products", "report_builder", "monthly_report"):
+    _mod = sys.modules.get(_name)
+    if _mod is not None and getattr(_mod, "__file__", None):
+        _mtime = os.path.getmtime(_mod.__file__)
+        if getattr(_mod, "_file_mtime", _mtime) != _mtime:
+            _mod = importlib.reload(_mod)
+        _mod._file_mtime = _mtime
 
 from monthly_report import (
     build_monthly_workbook, build_rows, grand_total, month_label, month_short, pdfs_from_zip, status_text,
