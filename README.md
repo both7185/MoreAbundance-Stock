@@ -31,6 +31,34 @@ Upload all of a month's POs (many PDFs, or one `.zip` of the folder). You get an
 * ยอดรวม is the printed `เป็นเงิน` of each PO by default. A switch uses the sum of qty × price instead.
   Some POs round their printed total to whole baht, and the screen flags those.
 
+## Product data tab (🗂️ ข้อมูลสินค้า)
+
+* Edit cells directly. Add a row with **+** on the table toolbar. Delete rows by ticking them and clicking the bin. Then press **💾 บันทึก**.
+* A blank Sup no. is filled in from another product that has the same ร้านหลัก.
+* **ชื่อใน PO** lists other spellings used in POs, separated by `|` (e.g. `ปลาช่อน | ปลาช่อนสด`).
+* Download as Excel, or import an Excel file such as `DATA P BOTH.xlsx`. Importing **replaces** the whole list.
+  It uses the values Excel saved for XLOOKUP cells, so save the file in Excel first.
+
+### Keep edits on Streamlit Community Cloud (GitHub token)
+
+The disk on Streamlit Cloud is temporary, so edits made on the website are lost when the app restarts.
+To keep them, let the app commit `products.csv` back to your repo:
+
+1. On GitHub, go to **Settings → Developer settings → Personal access tokens → Fine-grained tokens → Generate new token**.
+   Under Repository access choose *Only select repositories* (this repo). Under Permissions, set **Contents: Read and write**.
+2. On share.streamlit.io, open the app → **⋮ → Settings → Secrets** and paste:
+   ```toml
+   [github]
+   token  = "github_pat_xxxxxxxx"
+   repo   = "your-name/your-repo"
+   branch = "main"
+   path   = "products.csv"
+   ```
+3. Each save now creates a commit. Before you push from your own computer next time, run **`git pull`** first,
+   or the push will be rejected because the website added commits.
+
+When running locally (`run.bat`), saves go to `products.csv` in the folder. Push it as usual.
+
 ## Stack
 
 | Layer | Choice | Why |
@@ -47,7 +75,9 @@ Upload all of a month's POs (many PDFs, or one `.zip` of the folder). You get an
 | `app.py` | Streamlit UI: upload → check each file → preview/edit categories → download |
 | `po_extractor.py` | PDF → `PurchaseOrder` (PO no., วันที่, ใช้ในวันที่, items, printed total) |
 | `report_builder.py` | Group by (name, unit, price), split qty by date, build the styled workbook |
-| `catalog.json` | Category per item, keyword rules for new items, name/unit aliases, category order |
+| `catalog.json` | Name/unit aliases (e.g. ปี๊บ → ปิ๊บ) |
+| `products.py` | Product list logic: matching, Sup no. sort, Excel import/export, GitHub save |
+| `products.csv` | **Product list (Data)**: หมวดหมู่, รายการ, หน่วยนับ, ร้านหลัก, Sup no., ชื่อใน PO. Edited in the 🗂️ tab |
 
 ## Things worth knowing
 
@@ -65,11 +95,11 @@ type a date per file in step 1 if one can't be read. POs that land on the same d
 `ซีอิ๊วขาวตราง่วนเชียง → ซีอิ๊วขาวง่วนเชียง`, `คื่นช่าย → คืนช่าย`, and `ปี๊บ → ปิ๊บ`. Edit or empty these maps as
 you like, or switch them off in the sidebar.
 
-**Categories.** Matching uses the exact item names from the template first, then the `keyword_rules` (first match wins),
-then `default_category` (blank). You can change a category in the preview table, and
-"💾 จำหมวดหมู่ที่แก้ไว้" saves it to `catalog.json` for next time.
-
-**Sort order.** Rows follow `category_order`, then the item name in Thai Unicode order. This is the same order as the template.
+**Categories and sort order (Data).** Each PO item is looked up by name in `products.csv`, ignoring spaces
+and any extra spellings listed in **ชื่อใน PO**. หมวดหมู่ comes from the product list. Rows are sorted by
+**Sup no.**: the letter in the order A → C → M → S → X, then the number (A-001, A-002 …), then the row order of the product list.
+Items not in the list go to the bottom with a blank หมวดหมู่, and the daily tab offers to link them or add them.
+Sup no. appears on the web page only; it is not a column in the Excel file.
 
 **Checks shown per file.** Each line's qty × price is compared with the printed amount, the sum is compared with the printed total,
 row numbers must be continuous, and both dates must be found. The Excel also keeps the template's

@@ -1,7 +1,7 @@
 """
-Aggregation + Excel generation that reproduces the template
-'ตารางสรุปและรวมรายการใบสั่งซื้อวัตถุดิบประกอบอาหาร' cell-for-cell,
-with one (จำนวน, จำนวนเงิน) column pair per PO date.
+Aggregation + Excel generation for
+'ตารางสรุปและรวมรายการใบสั่งซื้อวัตถุดิบประกอบอาหาร'
+(one จำนวน column per PO date, rows sorted by Sup no. from products.csv).
 """
 from __future__ import annotations
 
@@ -23,41 +23,15 @@ CATALOG_PATH = Path(__file__).with_name("catalog.json")
 
 
 # --------------------------------------------------------------------------- #
-# Catalog (categories + name/unit clean-up)
+# Catalog: only name / unit clean-up now (categories come from products.csv)
 # --------------------------------------------------------------------------- #
-def _is_category(v) -> bool:
-    """A real category is a non-empty string (not None / NaN / number)."""
-    return isinstance(v, str) and v.strip() != ""
-
-
 def load_catalog(path: Path = CATALOG_PATH) -> dict:
     with open(path, encoding="utf-8") as f:
         catalog = json.load(f)
-    # ignore broken entries (e.g. NaN saved from an empty table cell) instead of crashing
-    catalog["items"] = {k: v for k, v in catalog.get("items", {}).items() if _is_category(v)}
-    catalog["keyword_rules"] = [
-        r for r in catalog.get("keyword_rules", [])
-        if isinstance(r, (list, tuple)) and len(r) == 2 and _is_category(r[0]) and _is_category(r[1])
-    ]
-    catalog["category_order"] = [c for c in catalog.get("category_order", []) if _is_category(c)]
-    if not isinstance(catalog.get("default_category"), str):
-        catalog["default_category"] = ""
+    for key in ("name_aliases", "unit_aliases"):
+        m = catalog.get(key)
+        catalog[key] = {k: v for k, v in (m or {}).items() if isinstance(k, str) and isinstance(v, str) and v.strip()}
     return catalog
-
-
-def save_catalog(catalog: dict, path: Path = CATALOG_PATH) -> None:
-    catalog = dict(catalog, items={k: v for k, v in catalog.get("items", {}).items() if _is_category(v)})
-    with open(path, "w", encoding="utf-8") as f:
-        json.dump(catalog, f, ensure_ascii=False, indent=2)
-
-
-def categorize(name: str, catalog: dict) -> str:
-    if name in catalog.get("items", {}):
-        return catalog["items"][name]
-    for keyword, cat in catalog.get("keyword_rules", []):
-        if keyword in name:
-            return cat
-    return catalog.get("default_category", "")
 
 
 # --------------------------------------------------------------------------- #
@@ -65,10 +39,13 @@ def categorize(name: str, catalog: dict) -> str:
 # --------------------------------------------------------------------------- #
 @dataclass
 class SummaryRow:
-    category: str
+    category: str           # หมวดหมู่ from products.csv ('' if not found)
     name: str
     unit: str
     unit_price: float
+    sup_no: str = ""        # used for sorting only - not written to the Excel
+    matched: bool = False   # found in products.csv
+    po_names: set = field(default_factory=set)   # names exactly as printed in the POs
     qty_by_date: dict[date, float] = field(default_factory=dict)
 
 
@@ -79,22 +56,33 @@ class Summary:
     po_total_by_date: dict[date, float]   # "Original PO Total" per date column
     po_numbers: list[str]
 
+    @property
+    def unmatched(self) -> list[SummaryRow]:
+        return [r for r in self.rows if not r.matched]
+
 
 def aggregate(
     pos: list[PurchaseOrder],
     date_for_po: dict[str, date],
     catalog: dict,
+    product_lookup: dict | None = None,
     apply_aliases: bool = True,
-    category_overrides: dict[str, str] | None = None,
 ) -> Summary:
-    """Group by (item name, unit, unit price); split quantity by date."""
+    """
+    Group by (item name, unit, unit price); split quantity by date.
+    Order: Sup no. (A -> C -> M -> S -> X, then number), then the product's row in the product list;
+    items not in the product list go last (by name).
+    """
+    from products import norm, sup_sort_key  # local import keeps this module usable on its own
+
+    product_lookup = product_lookup or {}
     name_alias = catalog.get("name_aliases", {}) if apply_aliases else {}
     unit_alias = catalog.get("unit_aliases", {}) if apply_aliases else {}
-    category_overrides = category_overrides or {}
 
     groups: "OrderedDict[tuple, SummaryRow]" = OrderedDict()
     po_totals: dict[date, float] = {}
     po_numbers: list[str] = []
+    order_of: dict[tuple, int] = {}
 
     for po in pos:
         d = date_for_po[po.filename]
@@ -109,22 +97,26 @@ def aggregate(
             key = (name, unit, it.unit_price)
             row = groups.get(key)
             if row is None:
-                cat = category_overrides.get(name)
-                if not _is_category(cat):
-                    cat = categorize(name, catalog)
-                if not _is_category(cat):
-                    cat = ""
-                row = groups[key] = SummaryRow(cat, name, unit, it.unit_price)
+                info = product_lookup.get(norm(name)) or product_lookup.get(norm(it.name))
+                row = groups[key] = SummaryRow(
+                    category=info.category if info else "",
+                    name=name, unit=unit, unit_price=it.unit_price,
+                    sup_no=info.sup_no if info else "", matched=info is not None,
+                )
+                order_of[key] = info.order if info else 10**9
+            row.po_names.add(it.name)
             row.qty_by_date[d] = float(Decimal(str(row.qty_by_date.get(d, 0.0))) + Decimal(str(it.qty)))
 
-    order = {c: i for i, c in enumerate(catalog.get("category_order", []))}
     rows = sorted(
-        groups.values(),
-        # category order -> Thai item name (Unicode order, same as template) -> unit -> price
-        key=lambda r: (order.get(r.category, len(order)), r.category == "", r.category,
-                       r.name, r.unit, r.unit_price),
+        groups.items(),
+        key=lambda kv: (
+            not kv[1].matched,              # items not in the product list go last
+            sup_sort_key(kv[1].sup_no),     # A-001, A-002, ... C-..., M-..., S-..., X-...
+            order_of[kv[0]],                # same Sup no.: order of the product list
+            kv[1].name, kv[1].unit, kv[1].unit_price,
+        ),
     )
-    return Summary(sorted(po_totals), rows, po_totals, po_numbers)
+    return Summary(sorted(po_totals), [r for _, r in rows], po_totals, po_numbers)
 
 
 def date_range_label(dates: list[date]) -> str:
