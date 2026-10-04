@@ -4,8 +4,9 @@ Product master data ("Data P Both"): หมวดหมู่ + Sup no. for ever
 * Stored in products.csv (UTF-8) next to the app. One row per product.
 * A PO item is matched to a product by name, ignoring spaces. Extra spellings used in POs can be
   listed in the 'ชื่อใน PO' column, separated by '|'.
-* The daily Excel is sorted by Sup no.: letter in LETTER_ORDER (A -> C -> M -> S -> X), then the
-  number (A-001, A-002, ...), then the product's row order in this list.
+* Sup no. comes from the product's ร้านหลัก (shop list in sup_codes.json), like the original XLOOKUP.
+* The daily Excel is sorted by Sup no.: letter in LETTER_ORDER (A -> C -> M -> S -> X, set from
+  sup_codes.json), then the number (A-001, A-002, ...), then the product's row order in this list.
 * Saving on Streamlit Community Cloud: the disk there is temporary, so if GitHub secrets are set
   (see README) every save is also committed to the repo, which keeps it permanently.
 """
@@ -80,6 +81,23 @@ def format_sup(code: str) -> str:
     return f"{p[0]}-{p[1]:03d}" if p else clean(code)
 
 
+def set_letter_order(letters: list[str]) -> None:
+    """Sort order of position 1 (from sup_codes.json)."""
+    global LETTER_ORDER
+    if letters:
+        LETTER_ORDER = list(letters)
+
+
+_LEADING_VOWELS = "\u0E40\u0E41\u0E42\u0E43\u0E44"  # เ แ โ ใ ไ
+
+
+def thai_sort_key(text: str) -> str:
+    """Thai dictionary order: 'เบทาโกร' sorts under บ, 'แมคโคร' under ม (not after ฮ)."""
+    s = clean(text)
+    s = re.sub(f"([{_LEADING_VOWELS}])([\u0E01-\u0E2E])", r"\2\1", s)
+    return re.sub("[\u0E48-\u0E4C]", "", s)  # tone marks don't decide the order
+
+
 def sup_sort_key(code: str) -> tuple:
     p = parse_sup(code)
     if not p:
@@ -92,8 +110,12 @@ def sup_sort_key(code: str) -> tuple:
 # --------------------------------------------------------------------------- #
 # Load / save
 # --------------------------------------------------------------------------- #
-def normalize_rows(rows: list[dict]) -> list[dict]:
-    """Trim text, drop empty rows, format Sup no., fill missing Sup no. from ร้านหลัก, renumber."""
+def normalize_rows(rows: list[dict], shop_codes: dict[str, str] | None = None) -> list[dict]:
+    """
+    Trim text, drop empty rows, format Sup no., renumber ลำดับ.
+    Sup no. = code of the ร้านหลัก in `shop_codes` (shop list); otherwise kept as typed,
+    or filled from another product of the same shop.
+    """
     out = []
     for r in rows:
         row = {c: clean(r.get(c)) for c in COLUMNS}
@@ -102,7 +124,11 @@ def normalize_rows(rows: list[dict]) -> list[dict]:
         row[COL_SUP] = format_sup(row[COL_SUP])
         row[COL_ALIAS] = " | ".join(split_aliases(row[COL_ALIAS]))
         out.append(row)
-    # same supplier -> same Sup no. (like the XLOOKUP in the original Data sheet)
+    if shop_codes:
+        for row in out:
+            if row[COL_SUPPLIER] in shop_codes:
+                row[COL_SUP] = shop_codes[row[COL_SUPPLIER]]
+    # same supplier -> same Sup no. (fallback for shops not in the shop list)
     by_supplier = {}
     for row in out:
         if row[COL_SUPPLIER] and parse_sup(row[COL_SUP]):

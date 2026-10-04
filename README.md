@@ -34,10 +34,27 @@ Upload all of a month's POs (many PDFs, or one `.zip` of the folder). You get an
 ## Product data tab (🗂️ ข้อมูลสินค้า)
 
 * Edit cells directly. Add a row with **+** on the table toolbar. Delete rows by ticking them and clicking the bin. Then press **💾 บันทึก**.
-* A blank Sup no. is filled in from another product that has the same ร้านหลัก.
+* **เรียงตาราง** sorts the view by หมวดหมู่ (Thai dictionary order), Sup no., ร้านหลัก or รายการ. It is for viewing only:
+  the saved list order (ลำดับ) does not change. That order decides the sequence of products that share a Sup no. in the Excel.
+* **ร้านหลัก** is a dropdown of shops. **Sup no. follows the shop automatically**, like the old XLOOKUP. To change a code
+  or add a shop, use the 🏷️ tab.
 * **ชื่อใน PO** lists other spellings used in POs, separated by `|` (e.g. `ปลาช่อน | ปลาช่อนสด`).
 * Download as Excel, or import an Excel file such as `DATA P BOTH.xlsx`. Importing **replaces** the whole list.
-  It uses the values Excel saved for XLOOKUP cells, so save the file in Excel first.
+
+## Sup code tab (🏷️ รหัส Sup)
+
+`M-211`: position 1 **M** (Market) · position 2 **2** (ของสด) · positions 3-4 **11** (running number).
+
+* **➕ เพิ่มร้านใหม่**: type the shop name and pick *Sup ตัวที่ 1* and *Sup ตัวที่ 2* from the dropdowns, which show each meaning in brackets.
+  The last 2 digits are assigned automatically as the highest number already used **in that position-2 group** + 1.
+  Groups are shared across letters, e.g. group 1 runs C-101, C-102, C-103, S-104 … S-107, so the next one is 08.
+* **Shop list**: rename a shop or change its code, and every product of that shop follows. A shop that still has products cannot be deleted.
+* **Code meanings**: add, edit or delete letters and digits. The row order of the *Sup ตัวที่ 1* table is the sort order of the Excel
+  (A → C → M → S → X by default).
+* Import / export `Sup no.xlsx` (both sheets: การตั้งชื่อ and ชื่อ Sup).
+
+The **unmatched-items panel** in the daily tab uses the same dropdowns. Either pick an existing shop, or type a new shop name and choose
+Sup ตัวที่ 1 / 2. The preview table shows the resulting Sup no. before you save.
 
 ### Keep edits on Streamlit Community Cloud (GitHub token)
 
@@ -54,7 +71,7 @@ To keep them, let the app commit `products.csv` back to your repo:
    branch = "main"
    path   = "products.csv"
    ```
-3. Each save now creates a commit. Before you push from your own computer next time, run **`git pull`** first,
+3. Each save now creates a commit (`products.csv` and `sup_codes.json`, in the same folder as `path`). Before you push from your own computer next time, run **`git pull`** first,
    or the push will be rejected because the website added commits.
 
 When running locally (`run.bat`), saves go to `products.csv` in the folder. Push it as usual.
@@ -78,6 +95,8 @@ When running locally (`run.bat`), saves go to `products.csv` in the folder. Push
 | `catalog.json` | Name/unit aliases (e.g. ปี๊บ → ปิ๊บ) |
 | `products.py` | Product list logic: matching, Sup no. sort, Excel import/export, GitHub save |
 | `products.csv` | **Product list (Data)**: หมวดหมู่, รายการ, หน่วยนับ, ร้านหลัก, Sup no., ชื่อใน PO. Edited in the 🗂️ tab |
+| `sup_codes.py` | Sup no. codes: meanings, shop list, next running number, Excel import/export |
+| `sup_codes.json` | **Sup codes**: meaning of position 1 (A/C/M/S/X) and position 2 (0-9), and every shop → Sup no. Edited in the 🏷️ tab |
 
 ## Things worth knowing
 

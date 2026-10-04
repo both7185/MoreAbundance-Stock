@@ -7,6 +7,7 @@ Tabs
   1. รวมรายการสินค้า   — items grouped across POs, one quantity column per date
   2. รวมยอดทั้งเดือน    — one row per PO (name + total), month total at the bottom
   3. ข้อมูลสินค้า (Data) — product list (หมวดหมู่, ร้านหลัก, Sup no.) used for category + sort order
+  4. รหัส Sup            — what each code position means + shops and their Sup no.
 """
 from __future__ import annotations
 
@@ -20,7 +21,7 @@ import streamlit as st
 # Streamlit Community Cloud re-reads app.py on every run but keeps the other modules in memory,
 # so after a `git push` the old report_builder.py / products.py ... would keep running until a reboot.
 # Reload any of our modules whose file changed since it was loaded (dependencies first).
-for _name in ("po_extractor", "products", "report_builder", "monthly_report"):
+for _name in ("po_extractor", "products", "sup_codes", "report_builder", "monthly_report"):
     _mod = sys.modules.get(_name)
     if _mod is not None and getattr(_mod, "__file__", None):
         _mtime = os.path.getmtime(_mod.__file__)
@@ -33,11 +34,16 @@ from monthly_report import (
 )
 from po_extractor import PurchaseOrder, parse_po, thai_short_date
 from products import (
-    COL_ALIAS, COL_CAT, COL_NAME, COL_NO, COL_SUP, COL_SUPPLIER, COL_UNIT, COLUMNS, EDIT_COLUMNS,
+    COL_ALIAS, COL_CAT, COL_NAME, COL_NO, COL_SUP, COL_SUPPLIER, COL_UNIT, COLUMNS,
     add_alias, build_lookup, export_excel, github_config, github_commit, import_excel,
-    load_products, normalize_rows, sup_sort_key, suggest, to_csv, validate, save_products_local,
+    load_products, normalize_rows, set_letter_order, suggest, thai_sort_key, to_csv, validate,
+    save_products_local,
 )
 from report_builder import aggregate, build_workbook, date_range_label, load_catalog
+from sup_codes import (
+    code_meaning, export_sup_excel, group_label, import_sup_excel, letter_label, letter_order,
+    load_sup, next_code, normalize_sup, save_sup_local, shop_label, shop_map, to_json, validate_sup,
+)
 
 st.set_page_config(page_title="สรุปใบสั่งซื้อ", page_icon="🧾", layout="wide")
 
@@ -93,29 +99,82 @@ def flash(kind: str, text: str) -> None:
 
 
 def show_flash() -> None:
+    # Always one container at the same spot, so the tabs below keep the selected tab after st.rerun()
+    box = st.container()
     for kind, text in st.session_state.pop("_flash", []):
-        getattr(st, kind)(text)
+        getattr(box, kind)(text)
 
 
-def persist_products(rows: list[dict], message: str) -> bool:
+def _commit(filename: str, content: str, message: str) -> str | None:
+    """Commit a data file to GitHub when secrets are set. Returns an error text, '' if done, None if not set up."""
+    gh = github_config(st.secrets)
+    if not gh:
+        return None
+    folder = gh["path"].rsplit("/", 1)[0] if "/" in gh["path"] else ""
+    target = dict(gh, path=gh["path"] if filename == "products.csv" else (f"{folder}/{filename}" if folder else filename))
+    try:
+        github_commit(content, target, message)
+        return ""
+    except Exception as e:
+        return str(e)
+
+
+def _report_save(what: str, results: list[str | None]) -> None:
+    if any(r for r in results):
+        flash("error", f"บันทึก{what}ในเครื่องแล้ว แต่ส่งขึ้น GitHub ไม่สำเร็จ: " + "; ".join(r for r in results if r))
+    elif all(r == "" for r in results):
+        flash("success", f"บันทึก{what}แล้ว และส่งขึ้น GitHub เรียบร้อย")
+    else:
+        flash("success", f"บันทึก{what}แล้ว")
+
+
+def current_sup() -> dict:
+    sup = load_sup()
+    set_letter_order(letter_order(sup))   # position-1 order = Excel sort order
+    return sup
+
+
+def current_products(sup: dict | None = None) -> list[dict]:
+    """Products with Sup no. taken from their ร้านหลัก."""
+    return normalize_rows(load_products(), shop_map(sup or current_sup()))
+
+
+def persist_products(rows: list[dict], message: str, sup: dict | None = None) -> bool:
     """Validate -> save products.csv -> commit to GitHub when configured. Returns True if saved."""
-    rows = normalize_rows(rows)
+    rows = normalize_rows(rows, shop_map(sup or current_sup()))
     errors, warnings = validate(rows)
     if errors:
         st.error("บันทึกไม่ได้:\n\n" + "\n".join(f"- {e}" for e in errors))
         return False
     save_products_local(rows)
-    gh = github_config(st.secrets)
-    if gh:
-        try:
-            github_commit(to_csv(rows), gh, message)
-            flash("success", f"บันทึกแล้ว ({len(rows)} รายการ) และส่งขึ้น GitHub เรียบร้อย")
-        except Exception as e:
-            flash("error", f"บันทึกในเครื่องแล้ว แต่ส่งขึ้น GitHub ไม่สำเร็จ: {e}")
-    else:
-        flash("success", f"บันทึกแล้ว ({len(rows)} รายการ) ลงไฟล์ products.csv")
+    _report_save(f"ข้อมูลสินค้า ({len(rows)} รายการ)", [_commit("products.csv", to_csv(rows), message)])
     for w in warnings[:10]:
         flash("warning", w)
+    st.session_state["products_ver"] = st.session_state.get("products_ver", 0) + 1
+    return True
+
+
+def persist_sup(data: dict, message: str, products: list[dict] | None = None) -> bool:
+    """
+    Save sup_codes.json. Products follow their shop: a changed shop code (or renamed shop, passed in
+    `products`) is written to products.csv too.
+    """
+    data = normalize_sup(data)
+    products = products if products is not None else load_products()
+    errors, warnings = validate_sup(data, products)
+    if errors:
+        st.error("บันทึกไม่ได้:\n\n" + "\n".join(f"- {e}" for e in errors))
+        return False
+    save_sup_local(data)
+    results = [_commit("sup_codes.json", to_json(data), message)]
+    new_products = normalize_rows(products, shop_map(data))
+    if new_products != load_products():
+        save_products_local(new_products)
+        results.append(_commit("products.csv", to_csv(new_products), message + " (อัปเดต Sup no. ของสินค้า)"))
+    _report_save("รหัส Sup", results)
+    for w in warnings[:10]:
+        flash("warning", w)
+    st.session_state["sup_ver"] = st.session_state.get("sup_ver", 0) + 1
     st.session_state["products_ver"] = st.session_state.get("products_ver", 0) + 1
     return True
 
@@ -201,7 +260,8 @@ def daily_section() -> None:
     # --------------------------------------------------------------------------- #
     # Step 2: preview — category + order come from the product list (🗂️ tab)
     # --------------------------------------------------------------------------- #
-    products = load_products()
+    sup = current_sup()
+    products = current_products(sup)
     summary = aggregate(pos, date_for_po, catalog, build_lookup(products), apply_aliases)
 
     st.subheader(f"2. ตารางสรุป — {date_range_label(summary.dates)}")
@@ -240,7 +300,7 @@ def daily_section() -> None:
     )
 
     if summary.unmatched:
-        unmatched_panel(summary.unmatched, products)
+        unmatched_panel(summary.unmatched, products, sup)
 
     # --------------------------------------------------------------------------- #
     # Step 3: Excel
@@ -258,19 +318,23 @@ def daily_section() -> None:
     )
 
 
-def unmatched_panel(unmatched, products: list[dict]) -> None:
+def unmatched_panel(unmatched, products: list[dict], sup: dict) -> None:
     """Items not in the product list: link them to an existing product, or add them as new products."""
     st.warning(f"มี {len(unmatched)} รายการที่ไม่พบในข้อมูลสินค้า — ตอนนี้จะอยู่ท้ายตารางและไม่มีหมวดหมู่")
     with st.expander("➕ จับคู่ / เพิ่มสินค้าเหล่านี้เข้าข้อมูลสินค้า", expanded=True):
         st.caption(
-            "**สะกดต่างจากชื่อเดิม** → เลือกสินค้าในช่อง *จับคู่กับสินค้าเดิม* (ระบบเติมให้เมื่อชื่อคล้ายมาก — ตรวจก่อนบันทึก)  \n"
-            "**สินค้าใหม่** → ปล่อยช่องจับคู่ว่าง แล้วกรอก หมวดหมู่ / ร้านหลัก / Sup no. "
-            "(ถ้าเลือกร้านหลักที่มีอยู่แล้วและเว้น Sup no. ว่าง ระบบจะใส่ Sup no. ของร้านนั้นให้)  \n"
-            "แถวที่ไม่ได้กรอกอะไรจะถูกข้าม"
+            "**สะกดต่างจากชื่อเดิม** → เลือกในช่อง *จับคู่กับสินค้าเดิม* (ระบบเติมให้เมื่อชื่อคล้ายมาก — ตรวจก่อนบันทึก)  \n"
+            "**สินค้าใหม่ ร้านเดิม** → เลือก *ร้านหลัก* แล้ว Sup no. จะตามร้านนั้น  \n"
+            "**สินค้าใหม่ ร้านใหม่** → พิมพ์ *ชื่อร้านใหม่* แล้วเลือก *Sup ตัวที่ 1* และ *Sup ตัวที่ 2* — "
+            "เลข 2 หลักท้ายระบบเรียงต่อให้อัตโนมัติ  \n"
+            "แถวที่ไม่ได้กรอกอะไรจะถูกข้าม • ดูผลลัพธ์ในตารางด้านล่างก่อนกดบันทึก"
         )
         names = [p[COL_NAME] for p in products]
-        cats = sorted({p[COL_CAT] for p in products if p[COL_CAT]})
-        suppliers = sorted({p[COL_SUPPLIER] for p in products if p[COL_SUPPLIER]})
+        cats = sorted({p[COL_CAT] for p in products if p[COL_CAT]}, key=thai_sort_key)
+        shops = [s["name"] for s in sup["shops"]]
+        codes = shop_map(sup)
+        letters = [d["code"] for d in sup["letters"]]
+        groups = [d["code"] for d in sup["groups"]]
         recs = []
         for r in unmatched:
             best = suggest(r.name, products, 1)
@@ -280,43 +344,93 @@ def unmatched_panel(unmatched, products: list[dict]) -> None:
                 "หน่วย": r.unit,
                 "ใกล้เคียงที่สุด": f"{best_name} ({score:.0%})" if best_name else "",
                 "จับคู่กับสินค้าเดิม": best_name if score >= 0.88 else "",
-                COL_CAT: "", COL_SUPPLIER: "", COL_SUP: "",
+                COL_CAT: "", COL_SUPPLIER: "", "ชื่อร้านใหม่": "", "Sup ตัวที่ 1": "", "Sup ตัวที่ 2": "",
             })
         df = pd.DataFrame(recs)
         edited = st.data_editor(
             df, hide_index=True, width="stretch",
             disabled=["ชื่อใน PO", "หน่วย", "ใกล้เคียงที่สุด"],
             column_config={
-                "จับคู่กับสินค้าเดิม": st.column_config.SelectboxColumn(options=names),
-                COL_CAT: st.column_config.SelectboxColumn(options=cats, help="สำหรับเพิ่มเป็นสินค้าใหม่"),
-                COL_SUPPLIER: st.column_config.SelectboxColumn(options=suppliers, help="สำหรับเพิ่มเป็นสินค้าใหม่"),
-                COL_SUP: st.column_config.TextColumn(help="เช่น M-602 (เว้นว่างได้ถ้าเลือกร้านหลักแล้ว)"),
+                "จับคู่กับสินค้าเดิม": st.column_config.SelectboxColumn(options=[""] + names),
+                COL_CAT: st.column_config.SelectboxColumn(options=[""] + cats),
+                COL_SUPPLIER: st.column_config.SelectboxColumn(
+                    "ร้านหลัก (ร้านเดิม)", options=[""] + shops, format_func=lambda n: f"{n} ({codes[n]})" if n in codes else n),
+                "ชื่อร้านใหม่": st.column_config.TextColumn(help="ถ้าเป็นร้านที่ยังไม่มีในรายชื่อ"),
+                "Sup ตัวที่ 1": st.column_config.SelectboxColumn(
+                    options=[""] + letters, format_func=lambda c: letter_label(sup, c) if c else "", help="ตำแหน่งที่ 1 ของ Sup no."),
+                "Sup ตัวที่ 2": st.column_config.SelectboxColumn(
+                    options=[""] + groups, format_func=lambda c: group_label(sup, c) if c else "", help="ตำแหน่งที่ 2 ของ Sup no."),
             },
             key="unmatched_" + "|".join(r.name for r in unmatched),
         )
-        if st.button("💾 บันทึกลงข้อมูลสินค้า", key="save_unmatched"):
+
+        # ---- plan what saving will do (live preview) ----
+        def val(v) -> str:
+            return v.strip() if isinstance(v, str) else ""
+
+        by_name = {r.name: r for r in unmatched}
+        plan, new_shops, problems = [], {}, []
+        for _, rec in edited.iterrows():
+            item = by_name[rec["ชื่อใน PO"]]
+            target, cat, shop = val(rec["จับคู่กับสินค้าเดิม"]), val(rec[COL_CAT]), val(rec[COL_SUPPLIER])
+            new_name, l1, l2 = val(rec["ชื่อร้านใหม่"]), val(rec["Sup ตัวที่ 1"]), val(rec["Sup ตัวที่ 2"])
+            if target:
+                plan.append(("link", item, target, None, None))
+                continue
+            if not any([cat, shop, new_name, l1, l2]):
+                continue
+            if shop:
+                plan.append(("add", item, cat, shop, codes[shop]))
+            elif new_name:
+                if new_name in codes:                       # typed an existing shop name
+                    plan.append(("add", item, cat, new_name, codes[new_name]))
+                elif new_name in new_shops:                 # same new shop used by several rows
+                    plan.append(("add", item, cat, new_name, new_shops[new_name]))
+                elif l1 and l2:
+                    code = next_code(sup, l1, l2, also_used=list(new_shops.values()))
+                    new_shops[new_name] = code
+                    plan.append(("add", item, cat, new_name, code))
+                else:
+                    problems.append(f"'{item.name}': เลือก Sup ตัวที่ 1 และ 2 ให้ร้านใหม่ '{new_name}'")
+            elif l1 or l2:
+                problems.append(f"'{item.name}': ใส่ชื่อร้านใหม่ (รหัสเป็นของร้าน)")
+            else:
+                plan.append(("add", item, cat, "", ""))
+
+        if plan:
+            st.markdown("**ผลลัพธ์ที่จะบันทึก**")
+            st.dataframe(pd.DataFrame([{
+                "ชื่อใน PO": p[1].name,
+                "จะทำอะไร": f"จับคู่กับ '{p[2]}'" if p[0] == "link" else
+                            ("เพิ่มสินค้าใหม่" + (f" + ร้านใหม่ '{p[3]}'" if p[3] in new_shops else "")),
+                COL_CAT: "" if p[0] == "link" else p[2],
+                COL_SUPPLIER: "" if p[0] == "link" else p[3],
+                COL_SUP: "" if p[0] == "link" else (p[4] or "⚠️ ไม่มี (จะอยู่ท้ายตาราง)"),
+                "ความหมาย": "" if p[0] == "link" else code_meaning(sup, p[4] or ""),
+            } for p in plan]), hide_index=True, width="stretch")
+        for msg in problems:
+            st.error(msg)
+
+        if st.button("💾 บันทึกลงข้อมูลสินค้า", key="save_unmatched", disabled=not plan or bool(problems)):
             rows = [dict(p) for p in products]
-            linked = added = 0
-            by_name = {r.name: r for r in unmatched}
-            for _, rec in edited.iterrows():
-                item = by_name[rec["ชื่อใน PO"]]
-                target = rec["จับคู่กับสินค้าเดิม"]
-                if isinstance(target, str) and target:
+            for kind, item, a1, shop, code in plan:
+                if kind == "link":
                     for alias in {item.name, *item.po_names}:
-                        if alias != target:
-                            add_alias(rows, target, alias)
-                    linked += 1
-                    continue
-                cat, sup_name, code = (rec[COL_CAT], rec[COL_SUPPLIER], rec[COL_SUP])
-                if any(isinstance(v, str) and v.strip() for v in (cat, sup_name, code)):
-                    rows.append({COL_NO: "", COL_CAT: cat or "", COL_NAME: item.name, COL_UNIT: item.unit,
-                                 COL_SUPPLIER: sup_name or "", COL_SUP: code or "",
+                        if alias != a1:
+                            add_alias(rows, a1, alias)
+                else:
+                    rows.append({COL_NO: "", COL_CAT: a1, COL_NAME: item.name, COL_UNIT: item.unit,
+                                 COL_SUPPLIER: shop, COL_SUP: code or "",
                                  COL_ALIAS: " | ".join(n for n in item.po_names if n != item.name)})
-                    added += 1
-            if not linked and not added:
-                st.info("ยังไม่ได้เลือก/กรอกแถวไหน")
-            elif persist_products(rows, f"PO app: จับคู่ {linked} / เพิ่มสินค้าใหม่ {added} รายการ"):
-                flash("info", f"จับคู่ {linked} รายการ • เพิ่มสินค้าใหม่ {added} รายการ")
+            ok = True
+            if new_shops:
+                new_sup = dict(sup, shops=sup["shops"] + [{"name": n, "code": c} for n, c in new_shops.items()])
+                ok = persist_sup(new_sup, f"PO app: เพิ่มร้านใหม่ {', '.join(new_shops)}")
+                sup = new_sup
+            if ok and persist_products(rows, f"PO app: จับคู่/เพิ่มสินค้า {len(plan)} รายการ", sup):
+                links = sum(1 for p in plan if p[0] == "link")
+                flash("info", f"จับคู่ {links} รายการ • เพิ่มสินค้าใหม่ {len(plan) - links} รายการ"
+                              + (f" • ร้านใหม่ {len(new_shops)} ร้าน" if new_shops else ""))
                 st.rerun()
 
 
@@ -387,69 +501,92 @@ def monthly_section() -> None:
     )
 
 
+SORT_OPTIONS = {
+    "ลำดับในรายการ": None,
+    "หมวดหมู่ (ก-ฮ)": lambda r: (thai_sort_key(r[COL_CAT]), r[COL_CAT] == ""),
+    "Sup no.": lambda r: (r[COL_SUP] == "", r[COL_SUP]),
+    "ร้านหลัก (ก-ฮ)": lambda r: thai_sort_key(r[COL_SUPPLIER]),
+    "รายการ (ก-ฮ)": lambda r: thai_sort_key(r[COL_NAME]),
+}
+
+
 def products_section() -> None:
-    products = load_products()
+    sup = current_sup()
+    products = current_products(sup)
     ver = st.session_state.get("products_ver", 0)
     gh = github_config(st.secrets)
+    codes = shop_map(sup)
 
     st.caption("รายการสินค้าที่ใช้กำหนด **หมวดหมู่** และ **ลำดับการเรียง (Sup no.)** ในไฟล์ Excel รวมรายการสินค้า  \n"
-               "เพิ่มแถว: คลิกแถวว่างล่างสุดของตาราง • ลบแถว: ติ๊กช่องหน้าแถวแล้วกดไอคอนถังขยะ (มุมขวาบนของตาราง) • "
-               "ค้นหา: ไอคอนแว่นขยาย • แก้เสร็จแล้วกด 💾 บันทึก")
+               "เพิ่มแถว: ปุ่ม **+** มุมขวาบนของตาราง • ลบแถว: ติ๊กช่องหน้าแถวแล้วกดไอคอนถังขยะ • "
+               "ค้นหา: ไอคอนแว่นขยาย • แก้เสร็จแล้วกด 💾 บันทึก  \n"
+               "**Sup no. ตามร้านหลักอัตโนมัติ** — เปลี่ยนรหัสหรือเพิ่มร้านใหม่ที่แท็บ 🏷️ รหัส Sup")
     if not gh:
-        st.info("💡 ตอนนี้บันทึกลงไฟล์ products.csv ในเครื่องที่รันแอปเท่านั้น — ถ้าแอปอยู่บน Streamlit Cloud "
+        st.info("💡 ตอนนี้บันทึกลงไฟล์ในเครื่องที่รันแอปเท่านั้น — ถ้าแอปอยู่บน Streamlit Cloud "
                 "การแก้ไขจะหายเมื่อแอปรีสตาร์ท จนกว่าจะตั้งค่า GitHub token (ดู README)")
 
-    c1, c2, c3 = st.columns(3)
+    c1, c2, c3, c4 = st.columns([1, 1, 1, 2])
     c1.metric("สินค้า", len(products))
-    c2.metric("ร้านหลัก", len({p[COL_SUPPLIER] for p in products if p[COL_SUPPLIER]}))
-    c3.metric("Sup no.", len({p[COL_SUP] for p in products if p[COL_SUP]}))
+    c2.metric("หมวดหมู่", len({p[COL_CAT] for p in products if p[COL_CAT]}))
+    c3.metric("ร้านหลัก", len({p[COL_SUPPLIER] for p in products if p[COL_SUPPLIER]}))
+    dirty = st.session_state.get("products_dirty", False)
+    sort_by = c4.selectbox(
+        "เรียงตาราง", list(SORT_OPTIONS), key="products_sort", disabled=dirty,
+        help="เรียงเพื่อดูเท่านั้น — ลำดับที่บันทึกในรายการไม่เปลี่ยน "
+             "(ลำดับในรายการใช้เรียงสินค้าที่มี Sup no. เดียวกันในไฟล์ Excel)"
+             + ("\n\nบันทึกหรือยกเลิกการแก้ไขก่อนเปลี่ยนการเรียง" if dirty else ""),
+    )
+    view = list(products)
+    if SORT_OPTIONS[sort_by]:
+        view = sorted(view, key=SORT_OPTIONS[sort_by])
 
-    df = pd.DataFrame(products, columns=COLUMNS) if products else pd.DataFrame(columns=COLUMNS)
-    cats = sorted({p[COL_CAT] for p in products if p[COL_CAT]})
+    df = pd.DataFrame(view, columns=COLUMNS) if view else pd.DataFrame(columns=COLUMNS)
+    df[COL_NO] = pd.to_numeric(df[COL_NO], errors="coerce")
+    shop_options = list(dict.fromkeys([s["name"] for s in sup["shops"]] +
+                                      [p[COL_SUPPLIER] for p in products if p[COL_SUPPLIER]]))
+    cats = sorted({p[COL_CAT] for p in products if p[COL_CAT]}, key=thai_sort_key)
     edited = st.data_editor(
         df,
         num_rows="dynamic",
         hide_index=True,
         width="stretch",
         height=560,
-        disabled=[COL_NO],
+        disabled=[COL_NO, COL_SUP],
         column_config={
-            COL_NO: st.column_config.NumberColumn(width="small", help="เรียงเลขใหม่อัตโนมัติตอนบันทึก"),
+            COL_NO: st.column_config.NumberColumn(width="small", help="ลำดับในรายการ (สินค้าใหม่ต่อท้าย)"),
             COL_CAT: st.column_config.TextColumn(help="เช่น " + ", ".join(cats[:6])),
             COL_NAME: st.column_config.TextColumn(required=True, help="ชื่อสินค้าตามใบ PO"),
-            COL_SUP: st.column_config.TextColumn(
-                help="รูปแบบ A-001 • เรียง A → C → M → S → X แล้วตามเลข • เว้นว่างได้ถ้าร้านหลักมีอยู่แล้ว",
-                validate=r"^$|^\s*[A-Za-z]+\s*-?\s*\d+\s*$",
-            ),
+            COL_SUPPLIER: st.column_config.SelectboxColumn(
+                options=shop_options, format_func=lambda n: f"{n} ({codes[n]})" if n in codes else n,
+                help="เลือกร้าน — Sup no. จะตามร้านนี้ (เพิ่มร้านใหม่ที่แท็บ 🏷️ รหัส Sup)"),
+            COL_SUP: st.column_config.TextColumn(help="มาจากร้านหลักอัตโนมัติ"),
             COL_ALIAS: st.column_config.TextColumn(
                 width="medium", help="ชื่อสะกดแบบอื่นที่ใช้ในใบ PO คั่นด้วย | เช่น ปลาช่อน | ปลาช่อนสด"),
         },
-        key=f"products_editor_{ver}",
+        key=f"products_editor_{ver}_{sort_by}",
     )
     rows = [{c: ("" if pd.isna(v) else v) for c, v in rec.items()} for rec in edited.to_dict("records")]
-    changed = normalize_rows(rows) != products
+    # keep the saved list order whatever the view sort: existing rows by ลำดับ, new rows at the end
+    rows.sort(key=lambda r: (r[COL_NO] == "", float(r[COL_NO]) if r[COL_NO] != "" else 0))
+    for r in rows:
+        if r[COL_NO] != "":
+            r[COL_NO] = str(int(float(r[COL_NO])))
+    changed = normalize_rows(rows, codes) != products
+    if changed != dirty:
+        st.session_state["products_dirty"] = changed
+        st.rerun()
 
     b1, b2, b3 = st.columns([1, 1, 3])
     if b1.button("💾 บันทึก", type="primary", disabled=not changed, key="save_products"):
-        if persist_products(rows, "PO app: แก้ไขข้อมูลสินค้า"):
+        if persist_products(rows, "PO app: แก้ไขข้อมูลสินค้า", sup):
+            st.session_state["products_dirty"] = False
             st.rerun()
     if b2.button("↩️ ยกเลิกการแก้ไข", disabled=not changed, key="reset_products"):
         st.session_state["products_ver"] = ver + 1
+        st.session_state["products_dirty"] = False
         st.rerun()
     if changed:
         b3.caption("⚠️ มีการแก้ไขที่ยังไม่ได้บันทึก")
-
-    with st.expander("รายชื่อร้านหลัก → Sup no. (ไว้ดูตอนเพิ่มสินค้าใหม่)"):
-        sup = {}
-        for p in products:
-            if p[COL_SUPPLIER]:
-                sup.setdefault((p[COL_SUP], p[COL_SUPPLIER]), 0)
-                sup[(p[COL_SUP], p[COL_SUPPLIER])] += 1
-        st.dataframe(
-            pd.DataFrame([{"Sup no.": k[0], "ร้านหลัก": k[1], "จำนวนสินค้า": v}
-                          for k, v in sorted(sup.items(), key=lambda kv: (sup_sort_key(kv[0][0]), kv[0][1]))]),
-            hide_index=True, width="stretch",
-        )
 
     with st.expander("⬇️ ดาวน์โหลด / ⬆️ นำเข้าจาก Excel"):
         st.download_button("⬇️ ดาวน์โหลดข้อมูลสินค้าเป็น Excel", data=export_excel(products),
@@ -467,7 +604,135 @@ def products_section() -> None:
                 for n in notes:
                     st.warning(n)
                 if st.button(f"แทนที่ข้อมูลทั้งหมดด้วย {len(new_rows)} รายการนี้", key="confirm_import"):
-                    if persist_products(new_rows, f"PO app: นำเข้าข้อมูลสินค้าจาก {up.name}"):
+                    if persist_products(new_rows, f"PO app: นำเข้าข้อมูลสินค้าจาก {up.name}", sup):
+                        st.rerun()
+
+
+def sup_section() -> None:
+    sup = current_sup()
+    products = load_products()
+    ver = st.session_state.get("sup_ver", 0)
+    used = {}
+    for p in products:
+        if p[COL_SUPPLIER]:
+            used[p[COL_SUPPLIER]] = used.get(p[COL_SUPPLIER], 0) + 1
+
+    st.caption("รูปแบบ Sup no. เช่น **M-211** = ตำแหน่งที่ 1 **M** (Market) • ตำแหน่งที่ 2 **2** (ของสด) • "
+               "ตำแหน่งที่ 3-4 **11** (เลขเรียงต่อกันในกลุ่มเดียวกัน)  \n"
+               "สินค้าแต่ละตัวได้ Sup no. ตาม **ร้านหลัก** — แก้รหัสของร้านที่นี่แล้วสินค้าทุกตัวของร้านนั้นเปลี่ยนตาม")
+
+    # ---------------- add a shop ----------------
+    st.subheader("➕ เพิ่มร้านใหม่")
+    letters = [d["code"] for d in sup["letters"]]
+    groups = [d["code"] for d in sup["groups"]]
+    a1, a2, a3, a4 = st.columns([3, 2, 2, 2])
+    new_name = a1.text_input("ชื่อร้าน", key=f"new_shop_name_{ver}", placeholder="เช่น ร้านใบมะกรูด")
+    l1 = a2.selectbox("Sup ตัวที่ 1", letters, format_func=lambda c: letter_label(sup, c), key=f"new_shop_l1_{ver}",
+                      index=letters.index("M") if "M" in letters else 0)
+    l2 = a3.selectbox("Sup ตัวที่ 2", groups, format_func=lambda c: group_label(sup, c), key=f"new_shop_l2_{ver}")
+    try:
+        preview = next_code(sup, l1, l2) if l1 and l2 else ""
+    except ValueError as e:
+        preview = ""
+        st.error(str(e))
+    a4.text_input("Sup no. ที่จะได้", value=preview, disabled=True, key=f"new_shop_code_{ver}_{l1}_{l2}",
+                  help="เลข 2 หลักท้าย = เลขสูงสุดที่ใช้แล้วในกลุ่มตัวที่ 2 เดียวกัน + 1")
+    if st.button("➕ เพิ่มร้าน", key="add_shop", disabled=not (new_name.strip() and preview)):
+        if new_name.strip() in shop_map(sup):
+            st.error(f"มีร้าน '{new_name.strip()}' อยู่แล้ว ({shop_map(sup)[new_name.strip()]})")
+        elif persist_sup(dict(sup, shops=sup["shops"] + [{"name": new_name.strip(), "code": preview}]),
+                         f"PO app: เพิ่มร้าน {new_name.strip()} ({preview})"):
+            flash("info", f"เพิ่ม '{new_name.strip()}' = {preview} แล้ว — เลือกร้านนี้ให้สินค้าได้ที่แท็บ 🗂️ ข้อมูลสินค้า")
+            st.rerun()
+
+    # ---------------- shops ----------------
+    st.subheader("🏪 รายชื่อร้านและ Sup no.")
+    shops_df = pd.DataFrame([{
+        "ร้าน": s["name"], "Sup no.": s["code"], "ความหมาย": code_meaning(sup, s["code"]),
+        "จำนวนสินค้า": used.get(s["name"], 0),
+    } for s in sup["shops"]], columns=["ร้าน", "Sup no.", "ความหมาย", "จำนวนสินค้า"])
+    ed_shops = st.data_editor(
+        shops_df, num_rows="dynamic", hide_index=True, width="stretch", height=420,
+        disabled=["ความหมาย", "จำนวนสินค้า"],
+        column_config={
+            "ร้าน": st.column_config.TextColumn(required=True, help="เปลี่ยนชื่อร้านได้ — สินค้าของร้านจะเปลี่ยนตาม"),
+            "Sup no.": st.column_config.TextColumn(
+                required=True, validate=r"^\s*[A-Za-z]+\s*-?\s*\d+\s*$",
+                help="รูปแบบ A-001 — แก้แล้วสินค้าทุกตัวของร้านนี้เปลี่ยนตาม"),
+            "จำนวนสินค้า": st.column_config.NumberColumn(help="ร้านที่ยังมีสินค้าใช้อยู่ลบไม่ได้"),
+        },
+        key=f"sup_shops_{ver}",
+    )
+
+    # ---------------- code meanings ----------------
+    st.subheader("🔤 ความหมายของรหัส")
+    m1, m2 = st.columns(2)
+    ed_letters = m1.data_editor(
+        pd.DataFrame([{"ตัวอักษร": d["code"], "ความหมาย": d["meaning"]} for d in sup["letters"]],
+                     columns=["ตัวอักษร", "ความหมาย"]),
+        num_rows="dynamic", hide_index=True, width="stretch",
+        column_config={"ตัวอักษร": st.column_config.TextColumn(
+            "Sup ตัวที่ 1", required=True, max_chars=1, validate=r"^[A-Za-z]$")},
+        key=f"sup_letters_{ver}",
+    )
+    m1.caption("ลำดับแถวในตารางนี้ = ลำดับการเรียงในไฟล์ Excel (บนลงล่าง)")
+    ed_groups = m2.data_editor(
+        pd.DataFrame([{"ตัวเลข": d["code"], "ความหมาย": d["meaning"]} for d in sup["groups"]],
+                     columns=["ตัวเลข", "ความหมาย"]),
+        num_rows="dynamic", hide_index=True, width="stretch",
+        column_config={"ตัวเลข": st.column_config.TextColumn(
+            "Sup ตัวที่ 2", required=True, max_chars=1, validate=r"^\d$")},
+        key=f"sup_groups_{ver}",
+    )
+
+    def txt(v) -> str:
+        return "" if v is None or (isinstance(v, float) and pd.isna(v)) else str(v).strip()
+
+    new_data = normalize_sup({
+        "letters": [{"code": txt(r["ตัวอักษร"]), "meaning": txt(r["ความหมาย"])} for _, r in ed_letters.iterrows()],
+        "groups": [{"code": txt(r["ตัวเลข"]), "meaning": txt(r["ความหมาย"])} for _, r in ed_groups.iterrows()],
+        "shops": [{"name": txt(r["ร้าน"]), "code": txt(r["Sup no."])} for _, r in ed_shops.iterrows()],
+    })
+    # renamed shops: same row (index) as before, different name -> products follow
+    renames = {}
+    for idx, r in ed_shops.iterrows():
+        if idx in shops_df.index:
+            old, new = shops_df.at[idx, "ร้าน"], txt(r["ร้าน"])
+            if new and old != new:
+                renames[old] = new
+    changed = new_data != sup
+
+    b1, b2, b3 = st.columns([1, 1, 3])
+    if b1.button("💾 บันทึกรหัส Sup", type="primary", disabled=not changed, key="save_sup"):
+        prods = [dict(p, **{COL_SUPPLIER: renames.get(p[COL_SUPPLIER], p[COL_SUPPLIER])}) for p in products]
+        if persist_sup(new_data, "PO app: แก้ไขรหัส Sup", prods):
+            if renames:
+                flash("info", "เปลี่ยนชื่อร้านในข้อมูลสินค้าด้วย: " + ", ".join(f"{o} → {n}" for o, n in renames.items()))
+            st.rerun()
+    if b2.button("↩️ ยกเลิกการแก้ไข", disabled=not changed, key="reset_sup"):
+        st.session_state["sup_ver"] = ver + 1
+        st.rerun()
+    if changed:
+        b3.caption("⚠️ มีการแก้ไขที่ยังไม่ได้บันทึก")
+
+    with st.expander("⬇️ ดาวน์โหลด / ⬆️ นำเข้าจาก Excel"):
+        st.download_button("⬇️ ดาวน์โหลดรหัส Sup เป็น Excel", data=export_sup_excel(sup),
+                           file_name="Sup no.xlsx", mime=XLSX_MIME, key="export_sup")
+        st.divider()
+        up = st.file_uploader("นำเข้าไฟล์ Sup no.xlsx — จะ **แทนที่** ความหมายรหัสและรายชื่อร้านทั้งหมด",
+                              type=["xlsx"], key=f"import_sup_{ver}")
+        if up is not None:
+            try:
+                new_sup, notes = import_sup_excel(up.getvalue())
+            except Exception as e:
+                st.error(f"อ่านไฟล์ไม่ได้: {e}")
+            else:
+                st.write(f"พบ {len(new_sup['shops'])} ร้าน • ตัวที่ 1: {len(new_sup['letters'])} แบบ • "
+                         f"ตัวที่ 2: {len(new_sup['groups'])} แบบ")
+                for n in notes:
+                    st.warning(n)
+                if st.button("แทนที่ด้วยข้อมูลจากไฟล์นี้", key="confirm_import_sup"):
+                    if persist_sup(new_sup, f"PO app: นำเข้ารหัส Sup จาก {up.name}"):
                         st.rerun()
 
 
@@ -476,10 +741,13 @@ def products_section() -> None:
 # --------------------------------------------------------------------------- #
 st.title("🧾 สรุปและรวมรายการใบสั่งซื้อ")
 show_flash()
-tab_daily, tab_month, tab_data = st.tabs(["📦 รวมรายการสินค้า", "📅 รวมยอดทั้งเดือน", "🗂️ ข้อมูลสินค้า (Data)"])
+tab_daily, tab_month, tab_data, tab_sup = st.tabs(
+    ["📦 รวมรายการสินค้า", "📅 รวมยอดทั้งเดือน", "🗂️ ข้อมูลสินค้า (Data)", "🏷️ รหัส Sup"])
 with tab_daily:
     daily_section()
 with tab_month:
     monthly_section()
 with tab_data:
     products_section()
+with tab_sup:
+    sup_section()
