@@ -43,7 +43,7 @@ from products import (
 from report_builder import aggregate, build_workbook, date_range_label, load_catalog
 from sup_codes import (
     code_meaning, export_sup_excel, group_label, import_sup_excel, letter_label, letter_order,
-    load_sup, next_code, normalize_sup, save_sup_local, shop_label, shop_map, to_json, validate_sup,
+    load_sup, next_code, normalize_sup, save_sup_local, shop_map, to_json, validate_sup,
 )
 
 st.set_page_config(page_title="สรุปใบสั่งซื้อ", page_icon="🧾", layout="wide")
@@ -68,14 +68,22 @@ def collect_pdfs(uploads) -> list[tuple[str, bytes]]:
         else:
             files.append((up.name, up.getvalue()))
     seen: dict[str, int] = {}
-    unique = []
+    seen_data: dict[bytes, str] = {}
+    unique, skipped = [], []
     for name, data in files:
-        if name in seen:  # same file name twice -> keep both, distinct keys
+        if data in seen_data:  # exactly the same file twice (e.g. alone and inside a zip) -> count once
+            skipped.append(f"{name} (ซ้ำกับ {seen_data[data]})")
+            continue
+        seen_data[data] = name
+        if name in seen:  # same file name, different content -> keep both, distinct keys
             seen[name] += 1
-            name = f"{name} ({seen[name]})"
+            stem, dot, ext = name.rpartition(".")
+            name = f"{stem} ({seen[name]}).{ext}" if dot else f"{name} ({seen[name]})"
         else:
             seen[name] = 1
         unique.append((name, data))
+    if skipped:
+        st.warning("ข้ามไฟล์ที่อัปโหลดซ้ำ (เนื้อหาเหมือนกันทุกอย่าง): " + ", ".join(skipped))
     return unique
 
 
@@ -263,7 +271,8 @@ def daily_section() -> None:
             "ยอดตามใบสั่ง": st.column_config.NumberColumn(format="accounting"),
             "ยอดที่คำนวณได้": st.column_config.NumberColumn(format="accounting"),
         },
-        key=f"files_{use_delivery}",
+        # new key when the set of files changes, so a date typed for one file never moves to another
+        key=f"files_{use_delivery}_" + "|".join(sorted(p.filename for p in pos)),
     )
 
     for p in pos:
@@ -347,6 +356,16 @@ def unmatched_panel(unmatched, missing, products: list[dict], sup: dict) -> None
       * items not in the product list -> link to an existing product, or add as new products
       * products already in the list but without หมวดหมู่ -> fill it in (suggested from the same shop)
     """
+    # the same item at two prices / units is still one product -> one row here
+    po_names_of: dict[str, set] = {}
+    first_rows = []
+    for r in unmatched:
+        if r.name not in po_names_of:
+            po_names_of[r.name] = set()
+            first_rows.append(r)
+        po_names_of[r.name].update(r.po_names)
+    unmatched = first_rows
+
     if unmatched:
         st.warning(f"มี {len(unmatched)} รายการที่ไม่พบในข้อมูลสินค้า — ตอนนี้จะอยู่ท้ายตารางและไม่มีหมวดหมู่")
     if missing:
@@ -505,13 +524,13 @@ def unmatched_panel(unmatched, missing, products: list[dict], sup: dict) -> None
             rows = [dict(p) for p in products]
             for kind, item, a1, shop, code in plan:
                 if kind == "link":
-                    for alias in {item.name, *item.po_names}:
+                    for alias in {item.name, *po_names_of[item.name]}:
                         if alias != a1:
                             add_alias(rows, a1, alias)
                 else:
                     rows.append({COL_NO: "", COL_CAT: a1, COL_NAME: item.name, COL_UNIT: item.unit,
                                  COL_SUPPLIER: shop, COL_SUP: code or "",
-                                 COL_ALIAS: " | ".join(n for n in item.po_names if n != item.name)})
+                                 COL_ALIAS: " | ".join(n for n in sorted(po_names_of[item.name]) if n != item.name)})
             for name, cat, shop, code in cat_plan:
                 for row in rows:
                     if row[COL_NAME] == name:

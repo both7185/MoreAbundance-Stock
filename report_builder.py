@@ -289,8 +289,15 @@ def build_workbook(summary: Summary, po_number_label: str | None = None) -> byte
             cell.alignment = Alignment(horizontal="center")
 
     # quantity columns (จำนวนรวม + each date): sum only, no money comparison
+    def qty_total_nf(values) -> str:
+        t = float(sum(Decimal(str(v)) for v in values))
+        return NF_INT if t.is_integer() else _nf(t)   # 2.5 kg must not show as 3
+
+    col_values = {qty_col: [q for r in summary.rows for q in r.qty_by_date.values()]}
+    for i, d in enumerate(summary.dates):
+        col_values[first_date_col + i] = [r.qty_by_date[d] for r in summary.rows if d in r.qty_by_date]
     for c in [qty_col] + list(range(first_date_col, last_date_col + 1)):
-        footer(r_total, c, f"=SUM({L(c)}{first_row}:{L(c)}{last_body})", NF_INT)
+        footer(r_total, c, f"=SUM({L(c)}{first_row}:{L(c)}{last_body})", qty_total_nf(col_values[c]))
         footer(r_orig, c, "-", center=True)
         footer(r_var, c, "-", center=True)
     for rr in (r_total, r_orig, r_var):
