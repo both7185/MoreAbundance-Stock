@@ -284,8 +284,14 @@ def _detect_columns(header_cells: list[str]) -> dict | None:
 
 
 def parse_po(pdf_bytes: bytes, filename: str = "") -> PurchaseOrder:
+    with pymupdf.open(stream=pdf_bytes, filetype="pdf") as doc:
+        if doc.needs_pass:
+            raise ValueError("ไฟล์นี้มีรหัสผ่าน — เปิดใน PDF reader แล้วบันทึกเป็นไฟล์ใหม่แบบไม่มีรหัสผ่านก่อน")
+        return _parse_doc(doc, filename)
+
+
+def _parse_doc(doc: pymupdf.Document, filename: str) -> PurchaseOrder:
     po = PurchaseOrder(filename=filename)
-    doc = pymupdf.open(stream=pdf_bytes, filetype="pdf")
     glyph_maps = _font_glyph_maps(doc)
 
     cols = dict(_DEFAULT_COLS)
@@ -353,7 +359,9 @@ def parse_po(pdf_bytes: bytes, filename: str = "") -> PurchaseOrder:
         po.warnings.append(
             f"ยอดรวมที่คำนวณ {po.computed_total:,.2f} ≠ ยอดในใบสั่ง {po.stated_total:,.2f}"
         )
-    if not po.items:
+    if not text.strip():
+        po.warnings.append("ไม่มีข้อความในไฟล์ (อาจเป็นไฟล์สแกน/รูปภาพ) — ต้องใช้ PDF ที่ export จาก Word")
+    elif not po.items:
         po.warnings.append("ไม่พบตารางรายการสินค้าในไฟล์นี้")
     if po.delivery_date is None:
         po.warnings.append("อ่าน 'ใช้ในวันที่' ไม่ได้")

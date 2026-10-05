@@ -8,18 +8,14 @@ Product master data ("Data P Both"): หมวดหมู่ + Sup no. for ever
 * The daily Excel is sorted by Sup no.: letter in LETTER_ORDER (A -> C -> M -> S -> X, set from
   sup_codes.json), then the number (A-001, A-002, ...), then the product's row order in this list.
 * Saving on Streamlit Community Cloud: the disk there is temporary, so if GitHub secrets are set
-  (see README) every save is also committed to the repo, which keeps it permanently.
+  (see README) every save is also committed to the GitHub `data` branch (datastore.py).
 """
 from __future__ import annotations
 
-import base64
 import csv
 import io
-import json
 import re
 import unicodedata
-import urllib.error
-import urllib.request
 from dataclasses import dataclass
 from difflib import SequenceMatcher
 from pathlib import Path
@@ -38,7 +34,6 @@ COL_SUPPLIER = "ร้านหลัก"
 COL_SUP = "Sup no."
 COL_ALIAS = "ชื่อใน PO"           # other spellings found in POs, separated by |
 COLUMNS = [COL_NO, COL_CAT, COL_NAME, COL_UNIT, COL_SUPPLIER, COL_SUP, COL_ALIAS]
-EDIT_COLUMNS = COLUMNS[1:]         # ลำดับ is renumbered automatically
 
 LETTER_ORDER = ["A", "C", "M", "S", "X"]
 SUP_RE = re.compile(r"^\s*([A-Za-z]+)\s*-?\s*(\d+)\s*$")
@@ -295,7 +290,7 @@ def export_excel(rows: list[dict]) -> bytes:
 
 
 # --------------------------------------------------------------------------- #
-# Permanent save on Streamlit Community Cloud: commit products.csv to GitHub
+# GitHub settings for the permanent save on Streamlit Community Cloud (used by datastore.py)
 # --------------------------------------------------------------------------- #
 def github_config(secrets) -> dict | None:
     """Expects in .streamlit/secrets.toml (or the Cloud 'Secrets' box):
@@ -316,33 +311,3 @@ def github_config(secrets) -> dict | None:
     gh.setdefault("path", "products.csv")
     return gh
 
-
-def github_commit(content: str, gh: dict, message: str) -> None:
-    api = f"https://api.github.com/repos/{gh['repo']}/contents/{gh['path']}"
-    headers = {
-        "Authorization": f"Bearer {gh['token']}",
-        "Accept": "application/vnd.github+json",
-        "X-GitHub-Api-Version": "2022-11-28",
-        "User-Agent": "po-summary-app",
-    }
-    sha = None
-    try:
-        req = urllib.request.Request(f"{api}?ref={gh['branch']}", headers=headers)
-        with urllib.request.urlopen(req, timeout=20) as resp:
-            sha = json.load(resp).get("sha")
-    except urllib.error.HTTPError as e:
-        if e.code != 404:  # 404 = file not in repo yet
-            raise RuntimeError(f"GitHub ตอบกลับ {e.code}: {e.read().decode(errors='ignore')[:200]}") from e
-    body = {
-        "message": message,
-        "content": base64.b64encode(content.encode("utf-8")).decode(),
-        "branch": gh["branch"],
-    }
-    if sha:
-        body["sha"] = sha
-    req = urllib.request.Request(api, data=json.dumps(body).encode(), headers=headers, method="PUT")
-    try:
-        with urllib.request.urlopen(req, timeout=30):
-            pass
-    except urllib.error.HTTPError as e:
-        raise RuntimeError(f"GitHub ตอบกลับ {e.code}: {e.read().decode(errors='ignore')[:200]}") from e
