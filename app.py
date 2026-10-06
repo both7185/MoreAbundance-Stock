@@ -192,7 +192,7 @@ def persist_sup(data: dict, message: str, products: list[dict] | None = None) ->
     """
     data = normalize_sup(data)
     products = products if products is not None else load_products()
-    errors, warnings = validate_sup(data, products)
+    errors, warnings = validate_sup(data, products, previous=load_sup())
     if errors:
         st.error("บันทึกไม่ได้:\n\n" + "\n".join(f"- {e}" for e in errors))
         return False

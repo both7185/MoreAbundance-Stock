@@ -161,7 +161,13 @@ def next_code(data: dict, letter: str, group: str, also_used: list[str] = ()) ->
 # --------------------------------------------------------------------------- #
 # Validation
 # --------------------------------------------------------------------------- #
-def validate_sup(data: dict, products: list[dict] | None = None) -> tuple[list[str], list[str]]:
+def validate_sup(data: dict, products: list[dict] | None = None,
+                 previous: dict | None = None) -> tuple[list[str], list[str]]:
+    """
+    `products` + `previous` (the shop list before this edit): a shop that is removed while products
+    still use it is an error. Products whose shop was never in the list (typed in the product table)
+    are left alone, so adding a new shop is never blocked by them.
+    """
     errors, warnings = [], []
     letters, groups = set(meanings(data, "letters")), set(meanings(data, "groups"))
     for d in data["letters"]:
@@ -185,7 +191,8 @@ def validate_sup(data: dict, products: list[dict] | None = None) -> tuple[list[s
             warnings.append(f"'{s['name']}' ({s['code']}): ตำแหน่งที่ 2 '{p[1] // 100}' ยังไม่มีในตารางความหมาย")
     if products is not None:
         used = {p.get("ร้านหลัก") for p in products if p.get("ร้านหลัก")}
-        missing = sorted(used - seen)
+        before = {sh["name"] for sh in (previous or data)["shops"]}
+        missing = sorted((used & before) - seen)
         if missing:
             errors.append("ลบร้านที่ยังมีสินค้าใช้อยู่ไม่ได้: " + ", ".join(missing))
     return errors, warnings
