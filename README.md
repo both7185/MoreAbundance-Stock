@@ -4,6 +4,10 @@ Upload any number of Thai PO PDFs → get the summary Excel in the exact layout 
 `ตารางสรุปและรวมรายการใบสั่งซื้อวัตถุดิบประกอบอาหาร`, with live formulas.
 
 **Sheet layout:** ลำดับ | หมวดหมู่ | รายการสินค้า | หน่วย | **จำนวนรวม** | ราคา/หน่วย | one *จำนวน* column per date | จำนวนเงินรวม.
+A PO whose file name has a bracket tag gets its own column right after that date's normal column, in the order
+normal → a tag with โฟม → a tag with เย็น → other tags. The header shows the tag as written in the file name, e.g. `(กล่องโฟม)`. `(อัพเดทใหม่)` alone is not a tag,
+so `PO 14 ก.ย. 69 (อัพเดทใหม่)` goes in the normal column and `PO 14 ก.ย. 69 (มื้อเย็น - อัพเดทใหม่)` in the มื้อเย็น column.
+If one column gets both a file and its อัพเดทใหม่ version, the screen warns so the old one can be removed.
 จำนวนรวม is `=SUM(<date columns>)` and จำนวนเงินรวม is `=จำนวนรวม*ราคา/หน่วย`, so editing a day's quantity or a price updates the totals.
 
 ## Run

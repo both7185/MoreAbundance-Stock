@@ -1,12 +1,19 @@
 """
 Aggregation + Excel generation for
 'ตารางสรุปและรวมรายการใบสั่งซื้อวัตถุดิบประกอบอาหาร'
-(one จำนวน column per PO date, rows sorted by Sup no. from products.csv).
+(one จำนวน column per PO date and tag, rows sorted by Sup no. from products.csv).
+
+A PO whose file name has a bracket tag gets its own column right after that date's normal column:
+  'PO 8 ต.ค. 69.pdf'                       -> 8 ต.ค. 69
+  'PO 8 ต.ค. 69 (กล่องโฟม).pdf'             -> 8 ต.ค. 69 (กล่องโฟม)
+  'PO 8 ต.ค. 69 (มื้อเย็น - อัพเดทใหม่).pdf' -> 8 ต.ค. 69 (มื้อเย็น)
+"อัพเดทใหม่" on its own is not a tag, so 'PO 14 ก.ย. 69 (อัพเดทใหม่).pdf' stays in the normal column.
 """
 from __future__ import annotations
 
 import io
 import json
+import re
 from decimal import Decimal
 from collections import OrderedDict
 from dataclasses import dataclass, field
@@ -20,6 +27,44 @@ from openpyxl.utils import get_column_letter
 from po_extractor import THAI_MONTHS_ABBR, PurchaseOrder, thai_short_date
 
 CATALOG_PATH = Path(__file__).with_name("catalog.json")
+
+# "อัพเดทใหม่", "อัพเดตใหม่", "อัปเดตใหม่", "อัปเดทใหม่", "update" ...
+UPDATE_RE = re.compile(r"\s*-?\s*(อั[พป]เด[ทต](ใหม่)?|update[d]?)\s*-?\s*", re.IGNORECASE)
+
+# column order within one date: normal, then a tag containing "โฟม", then "เย็น"; other tags follow, alphabetical
+TAG_ORDER = ["โฟม", "เย็น"]
+
+
+def po_tag(filename: str) -> str:
+    """Column tag from the file name's brackets ('' = normal column). '(2)' copy numbers are ignored."""
+    stem = re.sub(r"\.pdf$", "", filename.strip(), flags=re.IGNORECASE)
+    parts = []
+    for inner in re.findall(r"\(([^)]*)\)", stem):
+        t = re.sub(r"\s+", " ", UPDATE_RE.sub(" ", inner)).strip(" -")
+        if t and not t.isdigit():
+            parts.append(t)
+    return " ".join(parts)
+
+
+def is_update(filename: str) -> bool:
+    return bool(UPDATE_RE.search(filename))
+
+
+Col = tuple  # (date, tag): one จำนวน column in the Excel
+
+
+def col_sort_key(col: Col):
+    d, tag = col
+    if not tag:
+        return (d, -1, "")
+    rank = next((i for i, word in enumerate(TAG_ORDER) if word in tag), len(TAG_ORDER))
+    return (d, rank, tag)
+
+
+def col_label(col: Col, sep: str = " ") -> str:
+    """(8 Oct, 'โฟม') -> '8 ต.ค. 69 (โฟม)'; sep="\\n" puts the tag on a second line (Excel header)"""
+    d, tag = col
+    return f"{thai_short_date(d)}{sep}({tag})" if tag else thai_short_date(d)
 
 
 # --------------------------------------------------------------------------- #
@@ -47,15 +92,20 @@ class SummaryRow:
     matched: bool = False   # found in products.csv
     product_name: str = ""  # name of the matched product in products.csv
     po_names: set = field(default_factory=set)   # names exactly as printed in the POs
-    qty_by_date: dict[date, float] = field(default_factory=dict)
+    qty_by_col: dict[Col, float] = field(default_factory=dict)
 
 
 @dataclass
 class Summary:
-    dates: list[date]
+    columns: list[Col]                    # (date, tag), in Excel order
     rows: list[SummaryRow]
-    po_total_by_date: dict[date, float]   # "Original PO Total" per date column
+    po_total_by_col: dict[Col, float]     # "Original PO Total" per column
     po_numbers: list[str]
+    files_by_col: dict[Col, list[str]] = field(default_factory=dict)
+
+    @property
+    def dates(self) -> list[date]:
+        return sorted({d for d, _ in self.columns})
 
     @property
     def unmatched(self) -> list[SummaryRow]:
@@ -80,7 +130,7 @@ def aggregate(
     apply_aliases: bool = True,
 ) -> Summary:
     """
-    Group by (item name, unit, unit price); split quantity by date.
+    Group by (item name, unit, unit price); split quantity by column (date + file-name tag).
     Order: Sup no. (A -> C -> M -> S -> X, then number), then the product's row in the product list;
     items not in the product list go last (by name).
     """
@@ -91,12 +141,14 @@ def aggregate(
     unit_alias = catalog.get("unit_aliases", {}) if apply_aliases else {}
 
     groups: "OrderedDict[tuple, SummaryRow]" = OrderedDict()
-    po_totals: dict[date, float] = {}
+    po_totals: dict[Col, float] = {}
+    files_by_col: dict[Col, list[str]] = {}
     po_numbers: list[str] = []
     order_of: dict[tuple, int] = {}
 
     for po in pos:
-        d = date_for_po[po.filename]
+        d = (date_for_po[po.filename], po_tag(po.filename))
+        files_by_col.setdefault(d, []).append(po.filename)
         if po.po_number and po.po_number not in po_numbers:
             po_numbers.append(po.po_number)
         total = po.stated_total if po.stated_total is not None else po.computed_total
@@ -117,7 +169,7 @@ def aggregate(
                 )
                 order_of[key] = info.order if info else 10**9
             row.po_names.add(it.name)
-            row.qty_by_date[d] = float(Decimal(str(row.qty_by_date.get(d, 0.0))) + Decimal(str(it.qty)))
+            row.qty_by_col[d] = float(Decimal(str(row.qty_by_col.get(d, 0.0))) + Decimal(str(it.qty)))
 
     rows = sorted(
         groups.items(),
@@ -128,7 +180,8 @@ def aggregate(
             kv[1].name, kv[1].unit, kv[1].unit_price,
         ),
     )
-    return Summary(sorted(po_totals), [r for _, r in rows], po_totals, po_numbers)
+    columns = sorted(po_totals, key=col_sort_key)
+    return Summary(columns, [r for _, r in rows], po_totals, po_numbers, files_by_col)
 
 
 def date_range_label(dates: list[date]) -> str:
@@ -156,12 +209,14 @@ THIN = Side(style="thin")
 BORDER_ALL = Border(left=THIN, right=THIN, top=THIN, bottom=THIN)
 FILL_GROUP = PatternFill("solid", fgColor="1F497D")    # row 4
 FILL_HEADER = PatternFill("solid", fgColor="2F5597")   # row 5
+FILL_STRIPE = PatternFill("solid", fgColor="DDEBF7")   # every other body row (light blue / white)
 F_TITLE = Font(name=FONT_NAME, size=14, bold=True)
 F_SUBTITLE = Font(name=FONT_NAME, size=11)
 F_HEAD = Font(name=FONT_NAME, size=11, bold=True, color="FFFFFF")
 F_BODY = Font(name=FONT_NAME, size=11)
 F_BOLD = Font(name=FONT_NAME, size=11, bold=True)
 CENTER = Alignment(horizontal="center", vertical="center")
+CENTER_WRAP = Alignment(horizontal="center", vertical="center", wrap_text=True)
 NF_2DP = "#,##0.00"
 NF_INT = "#,##0"
 
@@ -194,6 +249,16 @@ def _merged_label(ws, row, c1, c2, text):
         ws.cell(row, c).border = Border(right=THIN if c == c2 else None, top=THIN, bottom=THIN)
 
 
+def _header_width(text: str) -> float:
+    """Column width that fits a bold header; Thai vowel/tone marks sit above/below and take no width."""
+    width = 0.0
+    for ch in text:
+        if ch == "ั" or "ิ" <= ch <= "ฺ" or "็" <= ch <= "๎":
+            continue
+        width += 1.4 if "฀" <= ch <= "๿" else 1.0   # Thai letters are wider than digits
+    return max(DATE_COL_WIDTH, round(width + 2.5, 1))
+
+
 def _nf(v: float) -> str:
     """#,##0.00 normally; extra decimals only if the value really has them (never hides digits)."""
     return NF_2DP if round(v, 2) == v else "#,##0.00####"
@@ -207,7 +272,7 @@ def build_workbook(summary: Summary, po_number_label: str | None = None) -> byte
     """
     Layout
       A ลำดับ | B หมวดหมู่ | C รายการสินค้า | D หน่วย | E จำนวนรวม | F ราคา/หน่วย
-      G.. one 'จำนวน' column per date  (quantity ordered that day, as on the PO)
+      G.. one 'จำนวน' column per date + tag  (e.g. '8 ต.ค. 69', '8 ต.ค. 69 (โฟม)')
       last 'จำนวนเงินรวม'               (= จำนวนรวม × ราคา/หน่วย)
     จำนวนรวม = SUM of the date columns, so editing any day's quantity updates everything.
     """
@@ -220,7 +285,7 @@ def build_workbook(summary: Summary, po_number_label: str | None = None) -> byte
     qty_col = 5                                   # E  จำนวนรวม
     price_col = 6                                 # F  ราคา/หน่วย
     first_date_col = n_fixed + 1                  # G
-    last_date_col = first_date_col + len(summary.dates) - 1
+    last_date_col = first_date_col + len(summary.columns) - 1
     total_col = last_date_col + 1
     last_col = total_col
 
@@ -236,11 +301,13 @@ def build_workbook(summary: Summary, po_number_label: str | None = None) -> byte
 
     # ---- header rows 4-5 --------------------------------------------------
     _merged_header(ws, 4, 1, n_fixed, "รายละเอียดสินค้า", F_HEAD, FILL_GROUP)
-    for i, d in enumerate(summary.dates):
-        _merged_header(ws, 4, first_date_col + i, first_date_col + i, thai_short_date(d), F_HEAD, FILL_GROUP)
+    for i, col in enumerate(summary.columns):
+        _merged_header(ws, 4, first_date_col + i, first_date_col + i, col_label(col, "\n"), F_HEAD, FILL_GROUP)
+        if col[1]:
+            ws.cell(4, first_date_col + i).alignment = CENTER_WRAP
     _merged_header(ws, 4, total_col, total_col, "รวมทั้งสิ้น", F_HEAD, FILL_GROUP)
 
-    headers = [h for h, _ in FIXED_COLS] + ["จำนวน"] * len(summary.dates) + ["จำนวนเงินรวม"]
+    headers = [h for h, _ in FIXED_COLS] + ["จำนวน"] * len(summary.columns) + ["จำนวนเงินรวม"]
     for c, h in enumerate(headers, start=1):
         cell = ws.cell(5, c, h)
         cell.font, cell.fill, cell.alignment, cell.border = F_HEAD, FILL_HEADER, CENTER, BORDER_ALL
@@ -253,7 +320,7 @@ def build_workbook(summary: Summary, po_number_label: str | None = None) -> byte
             cell = ws.cell(row, c, v)
             cell.font, cell.border = F_BODY, BORDER_ALL
 
-        total_qty = float(sum(Decimal(str(v)) for v in r.qty_by_date.values()))
+        total_qty = float(sum(Decimal(str(v)) for v in r.qty_by_col.values()))
         q = ws.cell(row, qty_col, f"=SUM({L(first_date_col)}{row}:{L(last_date_col)}{row})")
         q.font, q.border = F_BOLD, BORDER_ALL
         q.number_format = NF_INT if total_qty.is_integer() else _nf(total_qty)
@@ -261,11 +328,11 @@ def build_workbook(summary: Summary, po_number_label: str | None = None) -> byte
         p = ws.cell(row, price_col, r.unit_price)
         p.font, p.border, p.number_format = F_BODY, BORDER_ALL, _nf(r.unit_price)
 
-        for i, d in enumerate(summary.dates):
+        for i, col in enumerate(summary.columns):
             cell = ws.cell(row, first_date_col + i)
             cell.font, cell.border = F_BODY, BORDER_ALL
-            if d in r.qty_by_date:
-                v = r.qty_by_date[d]
+            if col in r.qty_by_col:
+                v = r.qty_by_col[col]
                 cell.value = _num(v)
                 cell.number_format = NF_INT if float(v).is_integer() else _nf(v)
 
@@ -273,6 +340,9 @@ def build_workbook(summary: Summary, po_number_label: str | None = None) -> byte
         t.font, t.border, t.number_format = F_BOLD, BORDER_ALL, NF_2DP
 
     last_body = first_row + len(summary.rows) - 1
+    for row in range(first_row + 1, last_body + 1, 2):   # 2nd, 4th, ... item rows
+        for c in range(1, last_col + 1):
+            ws.cell(row, c).fill = FILL_STRIPE
     r_total, r_orig, r_var = last_body + 1, last_body + 2, last_body + 3
 
     # ---- footer -----------------------------------------------------------
@@ -293,9 +363,9 @@ def build_workbook(summary: Summary, po_number_label: str | None = None) -> byte
         t = float(sum(Decimal(str(v)) for v in values))
         return NF_INT if t.is_integer() else _nf(t)   # 2.5 kg must not show as 3
 
-    col_values = {qty_col: [q for r in summary.rows for q in r.qty_by_date.values()]}
-    for i, d in enumerate(summary.dates):
-        col_values[first_date_col + i] = [r.qty_by_date[d] for r in summary.rows if d in r.qty_by_date]
+    col_values = {qty_col: [q for r in summary.rows for q in r.qty_by_col.values()]}
+    for i, col in enumerate(summary.columns):
+        col_values[first_date_col + i] = [r.qty_by_col[col] for r in summary.rows if col in r.qty_by_col]
     for c in [qty_col] + list(range(first_date_col, last_date_col + 1)):
         footer(r_total, c, f"=SUM({L(c)}{first_row}:{L(c)}{last_body})", qty_total_nf(col_values[c]))
         footer(r_orig, c, "-", center=True)
@@ -304,7 +374,7 @@ def build_workbook(summary: Summary, po_number_label: str | None = None) -> byte
         footer(rr, price_col, None)
 
     # money: grand total vs. sum of the printed PO totals
-    orig_total = float(sum(Decimal(str(v)) for v in summary.po_total_by_date.values()))
+    orig_total = float(sum(Decimal(str(v)) for v in summary.po_total_by_col.values()))
     footer(r_total, total_col, f"=SUM({L(total_col)}{first_row}:{L(total_col)}{last_body})", NF_2DP)
     footer(r_orig, total_col, orig_total, NF_2DP)
     footer(r_var, total_col, f"={L(total_col)}{r_total}-{L(total_col)}{r_orig}", NF_2DP)
@@ -312,8 +382,10 @@ def build_workbook(summary: Summary, po_number_label: str | None = None) -> byte
     # ---- layout -----------------------------------------------------------
     for c, (_, w) in enumerate(FIXED_COLS, start=1):
         ws.column_dimensions[L(c)].width = w
-    for c in range(first_date_col, last_date_col + 1):
-        ws.column_dimensions[L(c)].width = DATE_COL_WIDTH
+    for i, col in enumerate(summary.columns):
+        ws.column_dimensions[L(first_date_col + i)].width = _header_width(f"({col[1]})") if col[1] else DATE_COL_WIDTH
+    if any(tag for _, tag in summary.columns):
+        ws.row_dimensions[4].height = 30   # date on top, (tag) below
     ws.column_dimensions[L(total_col)].width = TOTAL_COL_WIDTH
     ws.freeze_panes = f"{L(first_date_col)}{first_row}"
 

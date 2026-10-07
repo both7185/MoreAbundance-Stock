@@ -33,14 +33,14 @@ import datastore
 from monthly_report import (
     build_monthly_workbook, build_rows, grand_total, month_label, month_short, pdfs_from_zip, status_text,
 )
-from po_extractor import PurchaseOrder, parse_po, thai_short_date
+from po_extractor import PurchaseOrder, parse_po
 from products import (
     COL_ALIAS, COL_CAT, COL_NAME, COL_NO, COL_SUP, COL_SUPPLIER, COL_UNIT, COLUMNS,
     add_alias, build_lookup, export_excel, github_config, import_excel, suggest_category,
     load_products, normalize_rows, set_letter_order, suggest, thai_sort_key, to_csv, validate,
     save_products_local,
 )
-from report_builder import aggregate, build_workbook, date_range_label, load_catalog
+from report_builder import aggregate, build_workbook, col_label, date_range_label, is_update, load_catalog, po_tag
 from sup_codes import (
     code_meaning, export_sup_excel, group_label, import_sup_excel, letter_label, letter_order,
     load_sup, next_code, normalize_sup, save_sup_local, shop_map, to_json, validate_sup,
@@ -253,6 +253,7 @@ def daily_section() -> None:
         "วันที่ (หัวใบสั่ง)": p.po_date,
         "ใช้ในวันที่": p.delivery_date,
         "วันที่ที่ใช้ในรายงาน": (p.delivery_date if use_delivery else p.po_date) or p.po_date or p.delivery_date,
+        "คอลัมน์": f"({po_tag(p.filename)})" if po_tag(p.filename) else "ปกติ",
         "จำนวนรายการ": len(p.items),
         "ยอดตามใบสั่ง": p.stated_total,
         "ยอดที่คำนวณได้": p.computed_total,
@@ -275,6 +276,9 @@ def daily_section() -> None:
         key=f"files_{use_delivery}_" + "|".join(sorted(p.filename for p in pos)),
     )
 
+    st.caption("ไฟล์ที่มีวงเล็บในชื่อ เช่น (กล่องโฟม) หรือ (มื้อเย็น) แยกเป็นคอลัมน์ของตัวเองต่อจากคอลัมน์ปกติของวันนั้น • "
+               "คำว่า (อัพเดทใหม่) ไม่นับเป็นวงเล็บแยกคอลัมน์")
+
     for p in pos:
         if p.warnings:
             with st.expander(f"⚠️ {p.filename}"):
@@ -296,22 +300,28 @@ def daily_section() -> None:
     products = current_products(sup)
     summary = aggregate(pos, date_for_po, catalog, build_lookup(products), apply_aliases)
 
+    # an original PO and its "(อัพเดทใหม่)" version in the same column would be counted twice
+    for col, names in summary.files_by_col.items():
+        if len(names) > 1 and any(is_update(n) for n in names):
+            st.warning(f"คอลัมน์ {col_label(col)} มีหลายไฟล์: " + ", ".join(names) +
+                       " — ถ้าเป็นฉบับเดิมกับฉบับอัพเดทใหม่ ให้ลบฉบับเดิมออก ไม่อย่างนั้นจำนวนจะถูกนับซ้ำ")
+
     st.subheader(f"2. ตารางสรุป — {date_range_label(summary.dates)}")
     c1, c2, c3, c4 = st.columns(4)
     c1.metric("ไฟล์", len(pos))
-    c2.metric("วันที่ (คอลัมน์)", len(summary.dates))
+    c2.metric("คอลัมน์จำนวน", len(summary.columns))
     c3.metric("รายการสินค้า", len(summary.rows))
-    grand = sum(r.unit_price * q for r in summary.rows for q in r.qty_by_date.values())
+    grand = sum(r.unit_price * q for r in summary.rows for q in r.qty_by_col.values())
     c4.metric("ยอดรวม", f"{grand:,.2f}")
 
     preview = []
     for i, r in enumerate(summary.rows, start=1):
-        total_qty = sum(r.qty_by_date.values())
+        total_qty = sum(r.qty_by_col.values())
         rec = {"ลำดับ": i, "หมวดหมู่": r.category, "Sup no.": r.sup_no if r.matched else "⚠️ ไม่พบ",
                "รายการสินค้า": r.name, "หน่วย": r.unit, "จำนวนรวม": total_qty, "ราคา/หน่วย": r.unit_price}
-        for d in summary.dates:
-            q = r.qty_by_date.get(d)
-            rec[f"{thai_short_date(d)} จำนวน"] = "" if q is None else f"{q:,g}"
+        for col in summary.columns:
+            q = r.qty_by_col.get(col)
+            rec[f"{col_label(col)} จำนวน"] = "" if q is None else f"{q:,g}"
         rec["จำนวนเงินรวม"] = round(total_qty * r.unit_price, 2)
         preview.append(rec)
     preview_df = pd.DataFrame(preview)

@@ -22,11 +22,9 @@ from openpyxl.utils import get_column_letter
 from po_extractor import THAI_MONTHS_ABBR, THAI_MONTHS_FULL, PurchaseOrder, parse_thai_date
 from report_builder import (
     BORDER_ALL, CENTER, F_BODY, F_BOLD, F_HEAD, F_SUBTITLE, F_TITLE,
-    FILL_GROUP, FILL_HEADER, NF_2DP, THIN,
+    FILL_GROUP, FILL_HEADER, NF_2DP, THIN, UPDATE_RE,
 )
 
-# "อัพเดทใหม่", "อัพเดตใหม่", "อัปเดตใหม่", "อัปเดทใหม่", "update" ...
-_UPDATE_RE = re.compile(r"\s*-?\s*(อั[พป]เด[ทต](ใหม่)?|update[d]?)\s*-?\s*", re.IGNORECASE)
 
 # order for the bracket note when several POs share a date
 SUFFIX_ORDER = ["", "มื้อเย็น", "กล่องโฟม"]
@@ -37,7 +35,7 @@ def clean_po_name(filename: str) -> str:
     stem = re.sub(r"\.pdf$", "", filename.strip(), flags=re.IGNORECASE)
 
     def fix_bracket(m: re.Match) -> str:
-        inner = _UPDATE_RE.sub(" ", m.group(1)).strip(" -")
+        inner = UPDATE_RE.sub(" ", m.group(1)).strip(" -")
         return f" ({inner})" if inner else ""
 
     name = re.sub(r"\s*\(([^)]*)\)", fix_bracket, stem)
