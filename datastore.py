@@ -1,12 +1,12 @@
 """
-Keep the editable data (products.csv, sup_codes.json) on a separate GitHub branch ("data").
+Keep the editable data (products.csv, sup_codes.json, stock.json) on a separate GitHub branch ("data").
 
 Why: on Streamlit Community Cloud the disk is reset on every deploy, and the code lives on `main`.
 If the data lived on `main` too, pushing code (with an old products.csv from your PC) would
 overwrite what was added on the website. With a separate branch:
 
     main  -> code (+ the first version of the data files, used only to start the data branch)
-    data  -> products.csv, sup_codes.json  (written only by the app)
+    data  -> products.csv, sup_codes.json, stock.json  (written only by the app)
 
 * pull(): download the data files from the `data` branch into the app folder, so the rest of the
   app keeps reading plain local files. Creates the branch from `main` on the very first run.
@@ -23,7 +23,7 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
-DATA_FILES = ["products.csv", "sup_codes.json"]
+DATA_FILES = ["products.csv", "sup_codes.json", "stock.json"]
 APP_DIR = Path(__file__).parent
 PROTECT_SECONDS = 300
 _recent_push: dict[str, tuple[bytes, float]] = {}   # file -> (content we committed, when)
@@ -75,24 +75,42 @@ def ensure_branch(gh: dict) -> None:
     _api(gh, "POST", "git/refs", {"ref": f"refs/heads/{branch}", "sha": base["object"]["sha"]})
 
 
+def _download(gh: dict, name: str) -> bytes | None:
+    """One data file from the data branch, or None if it is not there."""
+    info = _api(gh, "GET", f"contents/{remote_path(gh, name)}?ref={data_branch(gh)}")
+    if not info or info.get("type") != "file":
+        return None
+    if info.get("content"):
+        return base64.b64decode(info["content"])
+    # large files: the API gives a download URL instead of inline content
+    req = urllib.request.Request(info["download_url"], headers=_headers(gh))
+    with urllib.request.urlopen(req, timeout=30) as resp:
+        return resp.read()
+
+
+def fetch(gh: dict, name: str) -> bytes | None:
+    """Latest version of one data file (no caching) — read just before changing it, so a save
+    starts from what other users saved a moment ago. None if the file is not on the branch yet."""
+    content = _download(gh, name)
+    recent = _recent_push.get(name)
+    if recent and content != recent[0] and time.time() - recent[1] < PROTECT_SECONDS:
+        local = APP_DIR / name
+        if local.exists() and local.read_bytes() == recent[0]:
+            return recent[0]   # GitHub may briefly return the previous version right after our commit
+    return content
+
+
 def pull(gh: dict) -> list[str]:
     """
     Copy the data files from the data branch into the app folder.
     Returns the names of files that changed locally. Files missing on the branch are left as they are.
     """
     changed = []
-    branch = data_branch(gh)
     ensure_branch(gh)   # first run after deploy: start the data branch from main's current files
     for name in DATA_FILES:
-        info = _api(gh, "GET", f"contents/{remote_path(gh, name)}?ref={branch}")
-        if not info or info.get("type") != "file":
+        content = _download(gh, name)
+        if content is None:
             continue
-        if info.get("content"):
-            content = base64.b64decode(info["content"])
-        else:  # large files: the API gives a download URL instead of inline content
-            req = urllib.request.Request(info["download_url"], headers=_headers(gh))
-            with urllib.request.urlopen(req, timeout=30) as resp:
-                content = resp.read()
         local = APP_DIR / name
         recent = _recent_push.get(name)
         if recent and content != recent[0] and time.time() - recent[1] < PROTECT_SECONDS \

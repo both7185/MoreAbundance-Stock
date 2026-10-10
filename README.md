@@ -61,6 +61,21 @@ Upload all of a month's POs (many PDFs, or one `.zip` of the folder). You get an
 The **unmatched-items panel** in the daily tab uses the same dropdowns. Either pick an existing shop, or type a new shop name and choose
 Sup ตัวที่ 1 / 2. The preview table shows the resulting Sup no. before you save.
 
+## Stock page (📦 สต็อกสินค้า)
+
+A separate page (sidebar), not linked to the PO features. Data: `stock.json`.
+
+* **Table**: ชื่อสินค้า, รหัส, หมวด, จำนวนในสต็อก, หน่วย, ขั้นต่ำ, สถานะ, วันหมดอายุ, ประวัติ.
+  Edit ชื่อสินค้า / หมวด / หน่วย / ขั้นต่ำ in the table and press 💾 บันทึก. Moving an item to another หมวด gives it a new code:
+  the category letter + the next number of that category (history follows the item).
+* **Status** from ขั้นต่ำ: 0 = Out of stock (red), below ขั้นต่ำ = Low stock (orange), otherwise Available (green).
+* **➕➖ เข้า-ออกสินค้า**: search by name or code, then เข้า / ออก / จำนวนในสต็อก (change it for a re-count) / วันหมดอายุ (optional) /
+  วันที่บันทึก → ยอดหลังบันทึก. Stock at 0 cannot be taken out. Taking out uses the earliest expiry first.
+* **วันหมดอายุ** lists every lot still in stock with its quantity. Fix a wrong date under ประวัติ → แก้ล็อตวันหมดอายุ.
+* **ประวัติ**: tick the box to see that item's movements. Kept for 90 days.
+* **🆕 เพิ่มสินค้าใหม่**: name, code (suggested automatically) and หมวด only.
+* Codes: ของสด M · ของแปรรูป P · ผัก V · ผลไม้ F · เครื่องปรุง I · ของแห้ง D · เครื่องดื่ม B · ของหวาน S · อื่นๆ X (e.g. `I-001`).
+
 ### Where the website keeps its data (GitHub `data` branch)
 
 The disk on Streamlit Cloud is temporary, and it is reset to the files on `main` at every deploy.
@@ -68,8 +83,8 @@ So the app keeps the editable data in a **separate branch, `data`**:
 
 | branch | contains | written by |
 |---|---|---|
-| `main` | code, plus the starting copy of `products.csv` / `sup_codes.json` | you (`git push`) |
-| `data` | the live `products.csv` and `sup_codes.json` | the app, on every 💾 save |
+| `main` | code, plus the starting copy of `products.csv` / `sup_codes.json` / `stock.json` | you (`git push`) |
+| `data` | the live `products.csv`, `sup_codes.json` and `stock.json` | the app, on every 💾 save |
 
 * The app downloads `data` when a page opens (at most once a minute) and commits there on every save.
   Pushing code to `main` never touches it, and a commit to `data` does not redeploy the app.
@@ -117,6 +132,8 @@ When running locally (`run.bat`) without secrets, the files in the folder are th
 | `products.csv` | **Product list (Data)**: หมวดหมู่, รายการ, หน่วยนับ, ทุน, ร้านหลัก, Sup no., ชื่อใน PO. Edited in the 🗂️ tab |
 | `sup_codes.py` | Sup no. codes: meanings, shop list, next running number, Excel import/export |
 | `sup_codes.json` | **Sup codes**: meaning of position 1 (A/C/M/S/X) and position 2 (0-9), and every shop → Sup no. Edited in the 🏷️ tab |
+| `stock.py` / `stock_page.py` | Stock page: data logic (codes, status, lots, history) / Streamlit UI |
+| `stock.json` | **Stock**: items with quantity, ขั้นต่ำ and expiry lots, plus 90 days of movements. Edited on the 📦 page |
 
 ## Things worth knowing
 
