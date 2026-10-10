@@ -448,9 +448,11 @@ def cost_editor(summary, products: list[dict], sup: dict) -> None:
                 new_cost[name] = None if v is None else float(v)
                 if v is None:
                     empty_keys.append(key)
+        css = ('[class*="st-key-cost_"] [data-testid="stNumberInputStepDown"], '   # no − / + buttons
+               '[class*="st-key-cost_"] [data-testid="stNumberInputStepUp"] { display: none; }')
         if empty_keys:   # empty ทุน boxes: yellow, like the empty cells in the table and the Excel
-            st.markdown("<style>" + ", ".join(f".st-key-{k} input" for k in empty_keys)
-                        + " { background-color: #fff3a0 !important; }</style>", unsafe_allow_html=True)
+            css += ", ".join(f".st-key-{k} input" for k in empty_keys) + " { background-color: #fff3a0 !important; }"
+        st.markdown(f"<style>{css}</style>", unsafe_allow_html=True)
         changes = {n: c for n, c in new_cost.items() if c != items[n]["ทุน"]}
 
         for r in summary.rows:   # typed costs apply to the preview + Excel even before saving
