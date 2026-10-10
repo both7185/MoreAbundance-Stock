@@ -283,8 +283,8 @@ def build_workbook(summary: Summary, po_number_label: str | None = None) -> byte
     Layout
       A ลำดับ | B หมวดหมู่ | C รายการสินค้า | D หน่วย | E จำนวนรวม | F ราคา/หน่วย
       G.. one 'จำนวน' column per date + tag  (e.g. '8 ต.ค. 69', '8 ต.ค. 69 (โฟม)')
-      then ทุน | ทุนรวม (= ทุน × จำนวนรวม) | กำไร (= ราคา/หน่วย − ทุน) | กำไรรวม (= กำไร × จำนวนรวม)
-      last 'จำนวนเงินรวม'               (= จำนวนรวม × ราคา/หน่วย)
+      then 'จำนวนเงินรวม'               (= จำนวนรวม × ราคา/หน่วย)
+      last ทุน | ทุนรวม (= ทุน × จำนวนรวม) | กำไร (= ราคา/หน่วย − ทุน) | กำไรรวม (= กำไร × จำนวนรวม)
     จำนวนรวม = SUM of the date columns, so editing any day's quantity updates everything.
     ทุน is blank when products.csv has no cost; the other three stay blank until a ทุน is typed.
     """
@@ -298,10 +298,10 @@ def build_workbook(summary: Summary, po_number_label: str | None = None) -> byte
     price_col = 6                                 # F  ราคา/หน่วย
     first_date_col = n_fixed + 1                  # G
     last_date_col = first_date_col + len(summary.columns) - 1
-    cost_col = last_date_col + 1                  # ทุน
+    total_col = last_date_col + 1                 # จำนวนเงินรวม
+    cost_col = total_col + 1                      # ทุน
     cost_total_col, profit_col, profit_total_col = cost_col + 1, cost_col + 2, cost_col + 3
-    total_col = profit_total_col + 1
-    last_col = total_col
+    last_col = profit_total_col
 
     # ---- title rows -------------------------------------------------------
     po_label = po_number_label if po_number_label is not None else ", ".join(summary.po_numbers)
@@ -319,11 +319,11 @@ def build_workbook(summary: Summary, po_number_label: str | None = None) -> byte
         _merged_header(ws, 4, first_date_col + i, first_date_col + i, col_label(col, "\n"), F_HEAD, FILL_GROUP)
         if col[1]:
             ws.cell(4, first_date_col + i).alignment = CENTER_WRAP
-    _merged_header(ws, 4, cost_col, profit_total_col, "ทุน / กำไร", F_HEAD, FILL_GROUP)
     _merged_header(ws, 4, total_col, total_col, "รวมทั้งสิ้น", F_HEAD, FILL_GROUP)
+    _merged_header(ws, 4, cost_col, profit_total_col, "ทุน / กำไร", F_HEAD, FILL_GROUP)
 
     headers = ([h for h, _ in FIXED_COLS] + ["จำนวน"] * len(summary.columns)
-               + [h for h, _ in PROFIT_COLS] + ["จำนวนเงินรวม"])
+               + ["จำนวนเงินรวม"] + [h for h, _ in PROFIT_COLS])
     for c, h in enumerate(headers, start=1):
         cell = ws.cell(5, c, h)
         cell.font, cell.fill, cell.alignment, cell.border = F_HEAD, FILL_HEADER, CENTER, BORDER_ALL
