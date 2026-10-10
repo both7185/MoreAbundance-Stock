@@ -22,7 +22,8 @@ import streamlit as st
 # Streamlit Community Cloud re-reads app.py on every run but keeps the other modules in memory,
 # so after a `git push` the old report_builder.py / products.py ... would keep running until a reboot.
 # Reload any of our modules whose file changed since it was loaded (dependencies first).
-for _name in ("po_extractor", "datastore", "products", "sup_codes", "report_builder", "monthly_report"):
+for _name in ("po_extractor", "datastore", "products", "sup_codes", "report_builder", "monthly_report",
+              "stock", "stock_page"):
     _mod = sys.modules.get(_name)
     if _mod is not None and getattr(_mod, "__file__", None):
         _mtime = os.path.getmtime(_mod.__file__)
@@ -31,6 +32,7 @@ for _name in ("po_extractor", "datastore", "products", "sup_codes", "report_buil
         _mod._file_mtime = _mtime
 
 import datastore
+import stock_page
 from monthly_report import (
     build_monthly_workbook, build_rows, grand_total, month_label, month_short, pdfs_from_zip, status_text,
 )
@@ -212,24 +214,6 @@ def persist_sup(data: dict, message: str, products: list[dict] | None = None) ->
 
 
 catalog = load_catalog()
-
-# --------------------------------------------------------------------------- #
-# Sidebar
-# --------------------------------------------------------------------------- #
-with st.sidebar:
-    st.header("ตั้งค่า — รวมรายการสินค้า")
-    date_basis = st.radio(
-        "ใช้วันที่ใดเป็นคอลัมน์",
-        ["ใช้ในวันที่ (วันส่งของ)", "วันที่ (หัวใบสั่ง)"],
-        help="ไฟล์ตัวอย่างทั้ง 2 ใบมี 'วันที่' หัวกระดาษเป็น 2 ต.ค. เหมือนกัน "
-             "แต่ template แยกคอลัมน์ตาม 'ใช้ในวันที่' (6 และ 7 ต.ค.)",
-    )
-    apply_aliases = st.toggle(
-        "ปรับชื่อสินค้า/หน่วยตาม catalog.json", value=True,
-        help="เช่น ซีอิ๊วขาวตราง่วนเชียง → ซีอิ๊วขาวง่วนเชียง, ปี๊บ → ปิ๊บ (ให้ตรงกับ template)",
-    )
-    po_label_override = st.text_input("ใบสั่งที่ (เว้นว่าง = ใช้ค่าจาก PDF)", "")
-
 
 def daily_section() -> None:
     st.caption("อัปโหลดใบสั่งซื้อ (PDF หรือ .zip) กี่ไฟล์ก็ได้ → ตรวจสอบ → ดาวน์โหลด Excel ที่มีสูตรคำนวณ")
@@ -982,18 +966,48 @@ def sup_section() -> None:
 
 
 # --------------------------------------------------------------------------- #
-# Page
+# Pages
 # --------------------------------------------------------------------------- #
-st.title("🧾 สรุปและรวมรายการใบสั่งซื้อ")
-sync_data()   # products.csv / sup_codes.json from the GitHub data branch
-show_flash()
-tab_daily, tab_month, tab_data, tab_sup = st.tabs(
-    ["📦 รวมรายการสินค้า", "📅 รวมยอดทั้งเดือน", "🗂️ ข้อมูลสินค้า (Data)", "🏷️ รหัส Sup"])
-with tab_daily:
-    daily_section()
-with tab_month:
-    monthly_section()
-with tab_data:
-    products_section()
-with tab_sup:
-    sup_section()
+def po_sidebar() -> None:
+    global date_basis, apply_aliases, po_label_override
+    with st.sidebar:
+        st.header("ตั้งค่า — รวมรายการสินค้า")
+        date_basis = st.radio(
+            "ใช้วันที่ใดเป็นคอลัมน์",
+            ["ใช้ในวันที่ (วันส่งของ)", "วันที่ (หัวใบสั่ง)"],
+            help="ไฟล์ตัวอย่างทั้ง 2 ใบมี 'วันที่' หัวกระดาษเป็น 2 ต.ค. เหมือนกัน "
+                 "แต่ template แยกคอลัมน์ตาม 'ใช้ในวันที่' (6 และ 7 ต.ค.)",
+        )
+        apply_aliases = st.toggle(
+            "ปรับชื่อสินค้า/หน่วยตาม catalog.json", value=True,
+            help="เช่น ซีอิ๊วขาวตราง่วนเชียง → ซีอิ๊วขาวง่วนเชียง, ปี๊บ → ปิ๊บ (ให้ตรงกับ template)",
+        )
+        po_label_override = st.text_input("ใบสั่งที่ (เว้นว่าง = ใช้ค่าจาก PDF)", "")
+
+
+def po_page() -> None:
+    po_sidebar()
+    st.title("🧾 สรุปและรวมรายการใบสั่งซื้อ")
+    sync_data()   # products.csv / sup_codes.json / stock.json from the GitHub data branch
+    show_flash()
+    tab_daily, tab_month, tab_data, tab_sup = st.tabs(
+        ["📦 รวมรายการสินค้า", "📅 รวมยอดทั้งเดือน", "🗂️ ข้อมูลสินค้า (Data)", "🏷️ รหัส Sup"])
+    with tab_daily:
+        daily_section()
+    with tab_month:
+        monthly_section()
+    with tab_data:
+        products_section()
+    with tab_sup:
+        sup_section()
+
+
+def stock_view() -> None:
+    sync_data()
+    stock_page.render(show_flash)
+
+
+st.navigation([
+    st.Page(po_page, title="สรุปใบสั่งซื้อ", icon="🧾", url_path="po", default=True),
+    st.Page(stock_view, title="สต็อกสินค้า", icon="📦", url_path="stock"),
+]).run()
