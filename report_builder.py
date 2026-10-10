@@ -21,6 +21,7 @@ from datetime import date
 from pathlib import Path
 
 from openpyxl import Workbook
+from openpyxl.formatting.rule import FormulaRule
 from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.utils import get_column_letter
 
@@ -212,6 +213,12 @@ BORDER_ALL = Border(left=THIN, right=THIN, top=THIN, bottom=THIN)
 FILL_GROUP = PatternFill("solid", fgColor="1F497D")    # row 4
 FILL_HEADER = PatternFill("solid", fgColor="2F5597")   # row 5
 FILL_STRIPE = PatternFill("solid", fgColor="DDEBF7")   # every other body row (light blue / white)
+# conditional formats (follow the cells when ทุน or a quantity is edited in Excel)
+CF_MISSING = PatternFill("solid", fgColor="FFFF00", bgColor="FFFF00")   # empty หมวดหมู่ / ทุน / ...: yellow
+CF_PROFIT = PatternFill("solid", fgColor="C6EFCE", bgColor="C6EFCE")    # กำไรรวม > 0: green
+CF_LOSS = PatternFill("solid", fgColor="FFC7CE", bgColor="FFC7CE")      # กำไรรวม < 0: red
+F_PROFIT = Font(color="006100", bold=True)
+F_LOSS = Font(color="9C0006", bold=True)
 F_TITLE = Font(name=FONT_NAME, size=14, bold=True)
 F_SUBTITLE = Font(name=FONT_NAME, size=11)
 F_HEAD = Font(name=FONT_NAME, size=11, bold=True, color="FFFFFF")
@@ -367,6 +374,20 @@ def build_workbook(summary: Summary, po_number_label: str | None = None) -> byte
         for c in range(1, last_col + 1):
             ws.cell(row, c).fill = FILL_STRIPE
     r_total, r_orig, r_var = last_body + 1, last_body + 2, last_body + 3
+
+    # yellow = still empty (no หมวดหมู่ / no ทุน yet); กำไรรวม green when > 0, red when < 0
+    if summary.rows:
+        for c in (2, cost_col, cost_total_col, profit_col, profit_total_col):
+            ref = f"{L(c)}{first_row}"
+            ws.conditional_formatting.add(
+                f"{ref}:{L(c)}{last_body}",
+                FormulaRule(formula=[f'LEN({ref})=0'], fill=CF_MISSING, stopIfTrue=True))
+        ref = f"{L(profit_total_col)}{first_row}"
+        rng = f"{ref}:{L(profit_total_col)}{r_total}"   # body + the total row
+        ws.conditional_formatting.add(
+            rng, FormulaRule(formula=[f"AND(ISNUMBER({ref}),{ref}>0)"], fill=CF_PROFIT, font=F_PROFIT))
+        ws.conditional_formatting.add(
+            rng, FormulaRule(formula=[f"AND(ISNUMBER({ref}),{ref}<0)"], fill=CF_LOSS, font=F_LOSS))
 
     # ---- footer -----------------------------------------------------------
     _merged_label(ws, r_total, 1, qty_col - 1, "รวมทั้งสิ้น (Calculated Total)")

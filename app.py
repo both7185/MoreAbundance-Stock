@@ -342,7 +342,7 @@ def daily_section() -> None:
         st.caption("เรียงตาม **Sup no.** (A → C → M → S → X แล้วตามเลข) • หมวดหมู่ Sup no. และทุน มาจากแท็บ 🗂️ ข้อมูลสินค้า • "
                    "คอลัมน์ Sup no. แสดงบนเว็บเท่านั้น ไม่อยู่ใน Excel")
         st.dataframe(
-            preview_df,
+            style_preview(preview_df),
             hide_index=True,
             width="stretch",
             height=min(36 * (len(preview_df) + 1), 600),
@@ -372,6 +372,27 @@ def daily_section() -> None:
         type="primary",
         key="daily_download",
     )
+
+
+MISSING_CSS = "background-color: #fff3a0"   # yellow: still empty (same as the Excel)
+PROFIT_CSS, LOSS_CSS = "color: #1a7f37; font-weight: 600", "color: #cf222e; font-weight: 600"
+MISSING_COLS = ["หมวดหมู่", "ทุน", "ทุนรวม", "กำไร", "กำไรรวม"]
+
+
+def style_preview(df: pd.DataFrame):
+    """Yellow = empty หมวดหมู่ / ทุน columns; กำไรรวม green when > 0, red when < 0."""
+    def profit_css(v) -> str:
+        v = str(v).replace(",", "")
+        if not v:
+            return MISSING_CSS
+        x = float(v)
+        return PROFIT_CSS if x > 0 else LOSS_CSS if x < 0 else ""
+
+    cols = [c for c in MISSING_COLS if c in df.columns and c != "กำไรรวม"]
+    styler = df.style.map(lambda v: MISSING_CSS if str(v).strip() == "" else "", subset=cols)
+    if "กำไรรวม" in df.columns:
+        styler = styler.map(profit_css, subset=["กำไรรวม"])
+    return styler.format({"ราคา/หน่วย": "{:,.2f}", "จำนวนรวม": "{:,g}", "จำนวนเงินรวม": "{:,.2f}"})
 
 
 def money(v: float) -> str:
