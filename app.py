@@ -330,12 +330,12 @@ def daily_section() -> None:
             for col in summary.columns:
                 q = r.qty_by_col.get(col)
                 rec[f"{col_label(col)} จำนวน"] = "" if q is None else f"{q:,g}"
+            rec["จำนวนเงินรวม"] = round(total_qty * r.unit_price, 2)
             known = r.cost is not None   # no ทุน -> the four columns stay empty (like the Excel)
             rec["ทุน"] = money(r.cost) if known else ""
             rec["ทุนรวม"] = money(r.cost * total_qty) if known else ""
             rec["กำไร"] = money(r.unit_price - r.cost) if known else ""
             rec["กำไรรวม"] = money((r.unit_price - r.cost) * total_qty) if known else ""
-            rec["จำนวนเงินรวม"] = round(total_qty * r.unit_price, 2)
             preview.append(rec)
         preview_df = pd.DataFrame(preview)
 
