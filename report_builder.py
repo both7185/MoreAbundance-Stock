@@ -93,6 +93,7 @@ class SummaryRow:
     product_name: str = ""  # name of the matched product in products.csv
     po_names: set = field(default_factory=set)   # names exactly as printed in the POs
     qty_by_col: dict[Col, float] = field(default_factory=dict)
+    cost: float | None = None  # ทุน per unit from products.csv (None = unknown)
 
 
 @dataclass
@@ -166,6 +167,7 @@ def aggregate(
                     name=name, unit=unit, unit_price=it.unit_price,
                     sup_no=info.sup_no if info else "", matched=info is not None,
                     product_name=info.name if info else "",
+                    cost=getattr(info, "cost", None) if info else None,
                 )
                 order_of[key] = info.order if info else 10**9
             row.po_names.add(it.name)
@@ -225,6 +227,7 @@ FIXED_COLS = [  # header, width
     ("จำนวนรวม", 12), ("ราคา/หน่วย", 15),
 ]
 DATE_COL_WIDTH = 10
+PROFIT_COLS = [("ทุน", 11), ("ทุนรวม", 14), ("กำไร", 11), ("กำไรรวม", 14)]  # header, width
 TOTAL_COL_WIDTH = 18
 
 
@@ -273,8 +276,10 @@ def build_workbook(summary: Summary, po_number_label: str | None = None) -> byte
     Layout
       A ลำดับ | B หมวดหมู่ | C รายการสินค้า | D หน่วย | E จำนวนรวม | F ราคา/หน่วย
       G.. one 'จำนวน' column per date + tag  (e.g. '8 ต.ค. 69', '8 ต.ค. 69 (โฟม)')
+      then ทุน | ทุนรวม (= ทุน × จำนวนรวม) | กำไร (= ราคา/หน่วย − ทุน) | กำไรรวม (= กำไร × จำนวนรวม)
       last 'จำนวนเงินรวม'               (= จำนวนรวม × ราคา/หน่วย)
     จำนวนรวม = SUM of the date columns, so editing any day's quantity updates everything.
+    ทุน is blank when products.csv has no cost; the other three stay blank until a ทุน is typed.
     """
     wb = Workbook()
     ws = wb.active
@@ -286,7 +291,9 @@ def build_workbook(summary: Summary, po_number_label: str | None = None) -> byte
     price_col = 6                                 # F  ราคา/หน่วย
     first_date_col = n_fixed + 1                  # G
     last_date_col = first_date_col + len(summary.columns) - 1
-    total_col = last_date_col + 1
+    cost_col = last_date_col + 1                  # ทุน
+    cost_total_col, profit_col, profit_total_col = cost_col + 1, cost_col + 2, cost_col + 3
+    total_col = profit_total_col + 1
     last_col = total_col
 
     # ---- title rows -------------------------------------------------------
@@ -305,9 +312,11 @@ def build_workbook(summary: Summary, po_number_label: str | None = None) -> byte
         _merged_header(ws, 4, first_date_col + i, first_date_col + i, col_label(col, "\n"), F_HEAD, FILL_GROUP)
         if col[1]:
             ws.cell(4, first_date_col + i).alignment = CENTER_WRAP
+    _merged_header(ws, 4, cost_col, profit_total_col, "ทุน / กำไร", F_HEAD, FILL_GROUP)
     _merged_header(ws, 4, total_col, total_col, "รวมทั้งสิ้น", F_HEAD, FILL_GROUP)
 
-    headers = [h for h, _ in FIXED_COLS] + ["จำนวน"] * len(summary.columns) + ["จำนวนเงินรวม"]
+    headers = ([h for h, _ in FIXED_COLS] + ["จำนวน"] * len(summary.columns)
+               + [h for h, _ in PROFIT_COLS] + ["จำนวนเงินรวม"])
     for c, h in enumerate(headers, start=1):
         cell = ws.cell(5, c, h)
         cell.font, cell.fill, cell.alignment, cell.border = F_HEAD, FILL_HEADER, CENTER, BORDER_ALL
@@ -335,6 +344,20 @@ def build_workbook(summary: Summary, po_number_label: str | None = None) -> byte
                 v = r.qty_by_col[col]
                 cell.value = _num(v)
                 cell.number_format = NF_INT if float(v).is_integer() else _nf(v)
+
+        k = ws.cell(row, cost_col, r.cost)
+        k.font, k.border = F_BODY, BORDER_ALL
+        k.number_format = _nf(r.cost) if r.cost is not None else NF_2DP
+        cost_ref, qty_ref = f"{L(cost_col)}{row}", f"{L(qty_col)}{row}"
+        profit_cells = [
+            (cost_total_col, f'=IF({cost_ref}="","",{cost_ref}*{qty_ref})'),
+            (profit_col, f'=IF({cost_ref}="","",{L(price_col)}{row}-{cost_ref})'),
+            (profit_total_col, f'=IF({cost_ref}="","",{L(profit_col)}{row}*{qty_ref})'),
+        ]
+        for c, formula in profit_cells:
+            cell = ws.cell(row, c, formula)
+            cell.font, cell.border, cell.number_format = F_BODY, BORDER_ALL, NF_2DP
+        ws.cell(row, profit_total_col).font = F_BOLD
 
         t = ws.cell(row, total_col, f"={L(qty_col)}{row}*{L(price_col)}{row}")
         t.font, t.border, t.number_format = F_BOLD, BORDER_ALL, NF_2DP
@@ -371,7 +394,12 @@ def build_workbook(summary: Summary, po_number_label: str | None = None) -> byte
         footer(r_orig, c, "-", center=True)
         footer(r_var, c, "-", center=True)
     for rr in (r_total, r_orig, r_var):
-        footer(rr, price_col, None)
+        for c in (price_col, cost_col, profit_col):
+            footer(rr, c, None)
+    for c in (cost_total_col, profit_total_col):   # SUM skips the blank ("") cells of items without ทุน
+        footer(r_total, c, f"=SUM({L(c)}{first_row}:{L(c)}{last_body})", NF_2DP)
+        footer(r_orig, c, "-", center=True)
+        footer(r_var, c, "-", center=True)
 
     # money: grand total vs. sum of the printed PO totals
     orig_total = float(sum(Decimal(str(v)) for v in summary.po_total_by_col.values()))
@@ -386,6 +414,8 @@ def build_workbook(summary: Summary, po_number_label: str | None = None) -> byte
         ws.column_dimensions[L(first_date_col + i)].width = _header_width(f"({col[1]})") if col[1] else DATE_COL_WIDTH
     if any(tag for _, tag in summary.columns):
         ws.row_dimensions[4].height = 30   # date on top, (tag) below
+    for c, (_, w) in enumerate(PROFIT_COLS, start=cost_col):
+        ws.column_dimensions[L(c)].width = w
     ws.column_dimensions[L(total_col)].width = TOTAL_COL_WIDTH
     ws.freeze_panes = f"{L(first_date_col)}{first_row}"
 

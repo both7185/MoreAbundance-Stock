@@ -35,8 +35,8 @@ from monthly_report import (
 )
 from po_extractor import PurchaseOrder, parse_po
 from products import (
-    COL_ALIAS, COL_CAT, COL_NAME, COL_NO, COL_SUP, COL_SUPPLIER, COL_UNIT, COLUMNS,
-    add_alias, build_lookup, export_excel, github_config, import_excel, suggest_category,
+    COL_ALIAS, COL_CAT, COL_COST, COL_NAME, COL_NO, COL_SUP, COL_SUPPLIER, COL_UNIT, COLUMNS,
+    add_alias, build_lookup, export_excel, github_config, import_excel, parse_cost, suggest_category,
     load_products, normalize_rows, set_letter_order, suggest, thai_sort_key, to_csv, validate,
     save_products_local,
 )
@@ -307,39 +307,53 @@ def daily_section() -> None:
                        " — ถ้าเป็นฉบับเดิมกับฉบับอัพเดทใหม่ ให้ลบฉบับเดิมออก ไม่อย่างนั้นจำนวนจะถูกนับซ้ำ")
 
     st.subheader(f"2. ตารางสรุป — {date_range_label(summary.dates)}")
-    c1, c2, c3, c4 = st.columns(4)
-    c1.metric("ไฟล์", len(pos))
-    c2.metric("คอลัมน์จำนวน", len(summary.columns))
-    c3.metric("รายการสินค้า", len(summary.rows))
-    grand = sum(r.unit_price * q for r in summary.rows for q in r.qty_by_col.values())
-    c4.metric("ยอดรวม", f"{grand:,.2f}")
+    preview_box = st.container()   # filled after the ทุน editor below, so typed costs show at once
+    cost_editor(summary, products, sup)
 
-    preview = []
-    for i, r in enumerate(summary.rows, start=1):
-        total_qty = sum(r.qty_by_col.values())
-        rec = {"ลำดับ": i, "หมวดหมู่": r.category, "Sup no.": r.sup_no if r.matched else "⚠️ ไม่พบ",
-               "รายการสินค้า": r.name, "หน่วย": r.unit, "จำนวนรวม": total_qty, "ราคา/หน่วย": r.unit_price}
-        for col in summary.columns:
-            q = r.qty_by_col.get(col)
-            rec[f"{col_label(col)} จำนวน"] = "" if q is None else f"{q:,g}"
-        rec["จำนวนเงินรวม"] = round(total_qty * r.unit_price, 2)
-        preview.append(rec)
-    preview_df = pd.DataFrame(preview)
+    with preview_box:
+        c1, c2, c3, c4, c5 = st.columns(5)
+        c1.metric("ไฟล์", len(pos))
+        c2.metric("คอลัมน์จำนวน", len(summary.columns))
+        c3.metric("รายการสินค้า", len(summary.rows))
+        grand = sum(r.unit_price * q for r in summary.rows for q in r.qty_by_col.values())
+        c4.metric("ยอดรวม", f"{grand:,.2f}")
+        with_cost = [r for r in summary.rows if r.cost is not None]
+        profit = sum((r.unit_price - r.cost) * sum(r.qty_by_col.values()) for r in with_cost)
+        c5.metric("กำไรรวม", f"{profit:,.2f}",
+                  help=f"คิดเฉพาะรายการที่มีทุน ({len(with_cost)} จาก {len(summary.rows)} รายการ)")
 
-    st.caption("เรียงตาม **Sup no.** (A → C → M → S → X แล้วตามเลข) • หมวดหมู่และ Sup no. มาจากแท็บ 🗂️ ข้อมูลสินค้า • "
-               "คอลัมน์ Sup no. แสดงบนเว็บเท่านั้น ไม่อยู่ใน Excel")
-    st.dataframe(
-        preview_df,
-        hide_index=True,
-        width="stretch",
-        height=min(36 * (len(preview_df) + 1), 600),
-        column_config={
-            "ราคา/หน่วย": st.column_config.NumberColumn(format="%.2f"),
-            "จำนวนรวม": st.column_config.NumberColumn(format="localized"),
-            **{c: st.column_config.TextColumn(alignment="right") for c in preview_df.columns if c.endswith(" จำนวน")},
-            "จำนวนเงินรวม": st.column_config.NumberColumn(format="accounting"),
-        },
-    )
+        preview = []
+        for i, r in enumerate(summary.rows, start=1):
+            total_qty = sum(r.qty_by_col.values())
+            rec = {"ลำดับ": i, "หมวดหมู่": r.category, "Sup no.": r.sup_no if r.matched else "⚠️ ไม่พบ",
+                   "รายการสินค้า": r.name, "หน่วย": r.unit, "จำนวนรวม": total_qty, "ราคา/หน่วย": r.unit_price}
+            for col in summary.columns:
+                q = r.qty_by_col.get(col)
+                rec[f"{col_label(col)} จำนวน"] = "" if q is None else f"{q:,g}"
+            known = r.cost is not None   # no ทุน -> the four columns stay empty (like the Excel)
+            rec["ทุน"] = money(r.cost) if known else ""
+            rec["ทุนรวม"] = money(r.cost * total_qty) if known else ""
+            rec["กำไร"] = money(r.unit_price - r.cost) if known else ""
+            rec["กำไรรวม"] = money((r.unit_price - r.cost) * total_qty) if known else ""
+            rec["จำนวนเงินรวม"] = round(total_qty * r.unit_price, 2)
+            preview.append(rec)
+        preview_df = pd.DataFrame(preview)
+
+        st.caption("เรียงตาม **Sup no.** (A → C → M → S → X แล้วตามเลข) • หมวดหมู่ Sup no. และทุน มาจากแท็บ 🗂️ ข้อมูลสินค้า • "
+                   "คอลัมน์ Sup no. แสดงบนเว็บเท่านั้น ไม่อยู่ใน Excel")
+        st.dataframe(
+            preview_df,
+            hide_index=True,
+            width="stretch",
+            height=min(36 * (len(preview_df) + 1), 600),
+            column_config={
+                "ราคา/หน่วย": st.column_config.NumberColumn(format="%.2f"),
+                "จำนวนรวม": st.column_config.NumberColumn(format="localized"),
+                **{c: st.column_config.TextColumn(alignment="right") for c in preview_df.columns if c.endswith(" จำนวน")},
+                **{c: st.column_config.TextColumn(alignment="right") for c in ("ทุน", "ทุนรวม", "กำไร", "กำไรรวม")},
+                "จำนวนเงินรวม": st.column_config.NumberColumn(format="accounting"),
+            },
+        )
 
     if summary.unmatched or summary.missing_category:
         unmatched_panel(summary.unmatched, summary.missing_category, products, sup)
@@ -358,6 +372,78 @@ def daily_section() -> None:
         type="primary",
         key="daily_download",
     )
+
+
+def money(v: float) -> str:
+    """1234.5 -> '1,234.50'; 4.56667 -> '4.5667' (more decimals only when the value has them)."""
+    v = round(v, 4)
+    return f"{v:,.2f}" if round(v, 2) == v else f"{v:,.4f}".rstrip("0")
+
+
+def cost_editor(summary, products: list[dict], sup: dict) -> None:
+    """
+    Edit ทุน of the products in these POs. Typed values are used for the preview and the Excel right away;
+    💾 saves them to the product list (same as the 🗂️ tab), so the next PO gets them too.
+    """
+    by_product = {p[COL_NAME]: p for p in products}
+    items: dict[str, dict] = {}   # product name -> editor row (one per product, in report order)
+    for r in summary.rows:
+        if not r.matched or r.product_name not in by_product:
+            continue
+        rec = items.setdefault(r.product_name, {
+            "รายการ": r.product_name, "หน่วย": by_product[r.product_name][COL_UNIT] or r.unit,
+            "ราคา/หน่วย": [], "ทุน": parse_cost(by_product[r.product_name][COL_COST]),
+        })
+        if r.unit_price not in rec["ราคา/หน่วย"]:
+            rec["ราคา/หน่วย"].append(r.unit_price)
+    if not items:
+        return
+    for rec in items.values():
+        rec["ราคา/หน่วย"] = ", ".join(f"{p:,.2f}" for p in rec["ราคา/หน่วย"])
+    missing = sum(rec["ทุน"] is None for rec in items.values())
+    n_unmatched = len({r.name for r in summary.unmatched})
+
+    label = "💰 ทุนสินค้า" + (f" — ยังไม่มีทุน {missing} รายการ" if missing else "")
+    with st.expander(label, expanded=False):
+        st.caption("แก้ช่อง **ทุน** (ต่อหน่วย) ได้เลย ตารางสรุปและ Excel ใช้ค่าที่พิมพ์ทันที • "
+                   "กด 💾 เพื่อบันทึกลงข้อมูลสินค้า (แท็บ 🗂️) ให้ใช้กับใบสั่งซื้อครั้งต่อไปด้วย • ว่าง = ยังไม่รู้ทุน"
+                   + (f"  \n{n_unmatched} รายการที่ยังไม่อยู่ในข้อมูลสินค้าไม่แสดงที่นี่ — เพิ่มสินค้าก่อนแล้วค่อยใส่ทุน"
+                      if n_unmatched else ""))
+        df = pd.DataFrame(list(items.values()))
+        ver = st.session_state.get("products_ver", 0)
+        edited = st.data_editor(
+            df,
+            hide_index=True,
+            width="stretch",
+            height=min(36 * (len(df) + 1), 420),
+            disabled=["รายการ", "หน่วย", "ราคา/หน่วย"],
+            column_config={
+                "ราคา/หน่วย": st.column_config.TextColumn(help="ราคาในใบสั่งซื้อ"),
+                "ทุน": st.column_config.NumberColumn(min_value=0, format="localized", help="ทุนต่อหน่วย"),
+            },
+            key=f"cost_editor_{ver}_" + "|".join(items),
+        )
+        new_cost = {}
+        for rec in edited.to_dict("records"):
+            v = rec["ทุน"]
+            new_cost[rec["รายการ"]] = None if v is None or pd.isna(v) else float(v)
+        changes = {n: c for n, c in new_cost.items() if c != items[n]["ทุน"]}
+
+        for r in summary.rows:   # typed costs apply to the preview + Excel even before saving
+            if r.matched and r.product_name in new_cost:
+                r.cost = new_cost[r.product_name]
+
+        b1, b2 = st.columns([1, 3])
+        if b1.button(f"💾 บันทึกทุน ({len(changes)} รายการ)", type="primary", disabled=not changes, key="save_costs"):
+            rows = [dict(p) for p in products]
+            for row in rows:
+                if row[COL_NAME] in changes:
+                    c = changes[row[COL_NAME]]
+                    row[COL_COST] = "" if c is None else str(c)
+            if persist_products(rows, f"PO app: แก้ไขทุน {len(changes)} รายการ", sup):
+                st.rerun()
+        if changes:
+            b2.caption("⚠️ ทุนที่แก้ยังไม่ได้บันทึกลงข้อมูลสินค้า (แต่ใช้ในตารางและ Excel ด้านล่างแล้ว)")
 
 
 def unmatched_panel(unmatched, missing, products: list[dict], sup: dict) -> None:
@@ -647,7 +733,7 @@ def products_section() -> None:
     gh = github_config(st.secrets)
     codes = shop_map(sup)
 
-    st.caption("รายการสินค้าที่ใช้กำหนด **หมวดหมู่** และ **ลำดับการเรียง (Sup no.)** ในไฟล์ Excel รวมรายการสินค้า  \n"
+    st.caption("รายการสินค้าที่ใช้กำหนด **หมวดหมู่** **ลำดับการเรียง (Sup no.)** และ **ทุน** ในไฟล์ Excel รวมรายการสินค้า  \n"
                "เพิ่มแถว: ปุ่ม **+** มุมขวาบนของตาราง • ลบแถว: ติ๊กช่องหน้าแถวแล้วกดไอคอนถังขยะ • "
                "ค้นหา: ไอคอนแว่นขยาย • แก้เสร็จแล้วกด 💾 บันทึก  \n"
                "**Sup no. ตามร้านหลักอัตโนมัติ** — เปลี่ยนรหัสหรือเพิ่มร้านใหม่ที่แท็บ 🏷️ รหัส Sup")
@@ -672,6 +758,7 @@ def products_section() -> None:
 
     df = pd.DataFrame(view, columns=COLUMNS) if view else pd.DataFrame(columns=COLUMNS)
     df[COL_NO] = pd.to_numeric(df[COL_NO], errors="coerce")
+    df[COL_COST] = pd.to_numeric(df[COL_COST].str.replace(",", ""), errors="coerce")
     shop_options = list(dict.fromkeys([s["name"] for s in sup["shops"]] +
                                       [p[COL_SUPPLIER] for p in products if p[COL_SUPPLIER]]))
     cats = sorted({p[COL_CAT] for p in products if p[COL_CAT]}, key=thai_sort_key)
@@ -686,6 +773,8 @@ def products_section() -> None:
             COL_NO: st.column_config.NumberColumn(width="small", help="ลำดับในรายการ (สินค้าใหม่ต่อท้าย)"),
             COL_CAT: st.column_config.TextColumn(help="เช่น " + ", ".join(cats[:6])),
             COL_NAME: st.column_config.TextColumn(required=True, help="ชื่อสินค้าตามใบ PO"),
+            COL_COST: st.column_config.NumberColumn(min_value=0, format="localized",
+                                                    help="ทุนต่อหน่วย — ใช้คำนวณ ทุนรวม / กำไร ในไฟล์ Excel (ว่าง = ยังไม่รู้)"),
             COL_SUPPLIER: st.column_config.SelectboxColumn(
                 options=shop_options, format_func=lambda n: f"{n} ({codes[n]})" if n in codes else n,
                 help="เลือกร้าน — Sup no. จะตามร้านนี้ (เพิ่มร้านใหม่ที่แท็บ 🏷️ รหัส Sup)"),
