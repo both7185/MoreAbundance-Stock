@@ -1,8 +1,9 @@
 """
 หน้า 📦 สต็อกสินค้า (separate from the PO pages). Data logic lives in stock.py.
 
-* Main table: name / หมวด / หน่วย / ขั้นต่ำ are edited in the table (💾 บันทึก). Clicking the 📜 box at the end
-  of a row (or the 📜 ดูประวัติ button) opens that item's in/out history in a pop-up (and fixes its expiry lots).
+* Main table: click 📜 ดูประวัติ at the end of a row for that item's in/out history in a pop-up (and to fix its
+  expiry lots). ✏️ แก้ไขตาราง switches the table to editing name / หมวด / หน่วย / ขั้นต่ำ (💾 บันทึก).
+* 📜 ประวัติทั้งหมด: every item's movements in one pop-up.
 * ➕➖ เข้า-ออกสินค้า: search an item, then เข้า / ออก / จำนวนในสต็อก / วันหมดอายุ / วันที่บันทึก → ยอดใหม่.
 * 🆕 เพิ่มสินค้าใหม่: name, รหัส, หมวด only — quantities come from เข้า-ออกสินค้า.
 """
@@ -187,8 +188,9 @@ def render(show_flash=None) -> None:
     st.title("📦 สต็อกสินค้า")
     if show_flash:
         show_flash()
-    st.caption("ดูยอดคงเหลือของสินค้าทั้งหมด • แก้ ชื่อสินค้า / หมวด / หน่วย / ขั้นต่ำ ในตารางได้เลยแล้วกด 💾 บันทึก "
-               "(ย้ายหมวด = ได้รหัสใหม่เป็นเลขถัดไปของหมวดนั้น) • กดช่อง 📜 ประวัติ ท้ายแถวเพื่อดูประวัติการเข้า-ออกของสินค้านั้น")
+    st.caption("ดูยอดคงเหลือของสินค้าทั้งหมด • กด **📜 ดูประวัติ** ท้ายแถวเพื่อดูการเข้า-ออกของสินค้านั้น • "
+               "เปิด **✏️ แก้ไขตาราง** เพื่อแก้ ชื่อสินค้า / หมวด / หน่วย / ขั้นต่ำ "
+               "(ย้ายหมวด = ได้รหัสใหม่เป็นเลขถัดไปของหมวดนั้น)")
     if not github_config(st.secrets):
         st.info("💡 ตอนนี้บันทึกลงไฟล์ในเครื่องที่รันแอปเท่านั้น — ถ้าแอปอยู่บน Streamlit Cloud "
                 "ข้อมูลจะหายเมื่อแอปรีสตาร์ท จนกว่าจะตั้งค่า GitHub token (ดู README)")
@@ -203,13 +205,11 @@ def render(show_flash=None) -> None:
         movement_dialog(data)
     if b2.button("🆕 เพิ่มสินค้าใหม่", width="stretch", disabled=dirty):
         add_dialog(data)
-    if b3.button("📜 ดูประวัติ", width="stretch"):
-        st.session_state["hist_search"] = None
-        history_dialog(data)
+    if b3.button("📜 ประวัติทั้งหมด", width="stretch", disabled=dirty):
+        all_history_dialog(data)
     open_code = st.session_state.pop("hist_open", None)   # set by a 📜 click in the table, see below
     if open_code and stock.find(data, open_code):
-        st.session_state["hist_search"] = open_code
-        history_dialog(data)
+        history_dialog(data, open_code)
 
     f1, f2 = st.columns([3, 1])
     query = f1.text_input("ค้นหา", placeholder="ค้นหาชื่อสินค้าหรือรหัส...", label_visibility="collapsed",
@@ -228,10 +228,6 @@ def render(show_flash=None) -> None:
         st.info("ไม่พบสินค้า" if items else "ยังไม่มีสินค้า — กด 🆕 เพิ่มสินค้าใหม่")
         return
 
-    df = pd.DataFrame([{
-        C_NAME: it["name"], C_CODE: it["code"], C_CAT: it["category"], C_QTY: it["qty"], C_UNIT: it["unit"],
-        C_MIN: it["min"], C_STATUS: STATUS_TH[stock.status(it)], C_EXP: lots_text(it), C_HIST: False,
-    } for it in view])
     status_by_row = [stock.status(it) for it in view]
 
     def row_colors(row: pd.Series) -> list[str]:
@@ -239,31 +235,63 @@ def render(show_flash=None) -> None:
         return [f"color:{fg};font-weight:600" if c == C_QTY else
                 f"color:{fg};background-color:{bg};font-weight:600" if c == C_STATUS else "" for c in row.index]
 
-    styled = df.style.apply(row_colors, axis=1).format({C_QTY: fmt_num, C_MIN: fmt_num})
+    base_config = {
+        C_NAME: st.column_config.TextColumn(width="medium"),
+        C_CODE: st.column_config.TextColumn(width="small"),
+        C_QTY: st.column_config.NumberColumn(width=115, help="เปลี่ยนยอดที่ปุ่ม ➕➖ เข้า-ออกสินค้า"),
+        C_UNIT: st.column_config.TextColumn(width="small"),
+        C_MIN: st.column_config.NumberColumn(width="small", help="ต่ำกว่าขั้นต่ำ = Low stock • 0 = Out of stock"),
+        C_STATUS: st.column_config.TextColumn(width=110),
+        C_EXP: st.column_config.TextColumn(width="medium", help="ทุกล็อตที่ยังเหลือ (จำนวน) • ⚠️ = หมดอายุแล้ว"),
+    }
+    height = min(38 + 35 * len(view), 640)
+    if st.session_state.pop("stock_edit_off", False):
+        st.session_state["stock_edit"] = False
+    editing = st.toggle("✏️ แก้ไขตาราง (ชื่อสินค้า / หมวด / หน่วย / ขั้นต่ำ)", key="stock_edit", disabled=dirty,
+                        help="บันทึกหรือยกเลิกการแก้ไขก่อนปิด" if dirty else None)
+
+    if not editing:
+        # ---- view: click 📜 ดูประวัติ in a row -> that item's history pop-up
+        df = pd.DataFrame([{
+            C_NAME: it["name"], C_CODE: it["code"], C_CAT: it["category"], C_QTY: it["qty"], C_UNIT: it["unit"],
+            C_MIN: it["min"], C_STATUS: STATUS_TH[stock.status(it)], C_EXP: lots_text(it), C_HIST: "📜 ดูประวัติ",
+        } for it in view])
+        event = st.dataframe(
+            df.style.apply(row_colors, axis=1).format({C_QTY: fmt_num, C_MIN: fmt_num}),
+            hide_index=True, width="stretch", height=height,
+            column_config={**base_config,
+                           C_HIST: st.column_config.TextColumn(width=110, help="กดเพื่อดูประวัติการเข้า-ออก")},
+            on_select="rerun", selection_mode="single-cell",
+            key=f"stock_table_{st.session_state.get('hist_ver', 0)}_{cat_filter}_{q}",
+        )
+        cells = event.selection.cells if event else []
+        if cells and cells[0][1] == C_HIST and 0 <= cells[0][0] < len(view):
+            st.session_state["hist_open"] = view[cells[0][0]]["code"]
+            st.session_state["hist_ver"] = st.session_state.get("hist_ver", 0) + 1   # clear the selection
+            st.rerun()
+        return
+
+    # ---- edit: name / หมวด / หน่วย / ขั้นต่ำ
+    df = pd.DataFrame([{
+        C_NAME: it["name"], C_CODE: it["code"], C_CAT: it["category"], C_QTY: it["qty"], C_UNIT: it["unit"],
+        C_MIN: it["min"], C_STATUS: STATUS_TH[stock.status(it)], C_EXP: lots_text(it),
+    } for it in view])
     edited = st.data_editor(
-        styled,
+        df.style.apply(row_colors, axis=1).format({C_QTY: fmt_num, C_MIN: fmt_num}),
         hide_index=True,
         width="stretch",
-        height=min(38 + 35 * len(df), 640),
-        disabled=[C_CODE, C_QTY, C_STATUS, C_EXP] + ([C_HIST] if dirty else []),
+        height=height,
+        disabled=[C_CODE, C_QTY, C_STATUS, C_EXP],
         column_config={
+            **base_config,
             C_NAME: st.column_config.TextColumn(required=True, width="medium"),
-            C_CODE: st.column_config.TextColumn(width="small"),
             C_CAT: st.column_config.SelectboxColumn(options=list(CATEGORIES), required=True,
                                                     help="ย้ายหมวด = ได้รหัสใหม่ (ตัวอักษรหมวด + เลขถัดไป) ตอนบันทึก"),
-            C_QTY: st.column_config.NumberColumn(width=115, help="เปลี่ยนยอดที่ปุ่ม ➕➖ เข้า-ออกสินค้า"),
-            C_UNIT: st.column_config.TextColumn(width="small"),
             C_MIN: st.column_config.NumberColumn(min_value=0, width="small", format="localized",
                                                  help="ต่ำกว่าขั้นต่ำ = Low stock • 0 = Out of stock"),
-            C_STATUS: st.column_config.TextColumn(width=110),
-            C_EXP: st.column_config.TextColumn(width="medium", help="ทุกล็อตที่ยังเหลือ (จำนวน) • ⚠️ = หมดอายุแล้ว"),
-            C_HIST: st.column_config.CheckboxColumn(
-                "ประวัติ", width=70, help="กดเพื่อเปิดประวัติการเข้า-ออก" + (" (บันทึกการแก้ไขก่อน)" if dirty else "")),
         },
-        key=f"stock_editor_{ver}_{st.session_state.get('hist_ver', 0)}_{cat_filter}_{q}",
+        key=f"stock_editor_{ver}_{cat_filter}_{q}",
     )
-
-    # ---- edits of name / หมวด / หน่วย / ขั้นต่ำ
     changes = []
     for it, (_, row) in zip(view, edited.iterrows()):
         new = (str(row[C_NAME] or "").strip(), row[C_CAT], str(row[C_UNIT] or "").strip(),
@@ -290,32 +318,66 @@ def render(show_flash=None) -> None:
                 for m in moved:
                     _flash("info", f"ย้ายหมวดแล้ว รหัสใหม่ — {m}")
                 st.session_state["stock_dirty"] = False
+                st.session_state["stock_edit_off"] = True
                 st.rerun()
         if s2.button("↩️ ยกเลิกการแก้ไข", key="stock_reset"):
             st.session_state["stock_dirty"] = False
+            st.session_state["stock_edit_off"] = True
             _bump()
             st.rerun()
         s3.caption(f"⚠️ แก้ไข {len(changes)} รายการ ยังไม่ได้บันทึก")
 
-    # ---- 📜 box clicked: open the history pop-up and clear the box (new editor key), so it works like a button
-    clicked = next((it["code"] for it, t in zip(view, edited[C_HIST]) if t), None)
-    if clicked and not dirty:
-        st.session_state["hist_open"] = clicked
-        st.session_state["hist_ver"] = st.session_state.get("hist_ver", 0) + 1
-        st.rerun()
+
+def history_rows(rows: list[dict], items: dict[str, dict] | None = None, unit: str = "") -> pd.DataFrame:
+    """Movements as a table; with `items` (code -> item) the product is shown too (all-items history)."""
+    out = []
+    for m in rows:
+        it = (items or {}).get(m["code"])
+        u = it["unit"] if it else unit
+        row = {"วันที่": fmt_date(m["date"])}
+        if items is not None:
+            row.update({"รหัส": m["code"], "สินค้า": it["name"] if it else "(ลบแล้ว)"})
+        row.update({
+            "เข้า (+)": fmt_num(m["in"]) if m["in"] else "",
+            "ออก (−)": fmt_num(m["out"]) if m["out"] else "",
+            "ยอดก่อน": fmt_num(m["before"]),
+            "นับใหม่": fmt_num(m["count"]) if m["count"] != m["before"] else "",
+            "ยอดหลัง": f"{fmt_num(m['after'])} {u}".strip(),
+            "วันหมดอายุ": fmt_date(m["exp"]),
+            "บันทึกเมื่อ": m.get("saved_at", ""),
+        })
+        out.append(row)
+    return pd.DataFrame(out)
+
+
+@st.dialog("📜 ประวัติทั้งหมด", width="large")
+def all_history_dialog(data: dict) -> None:
+    items = {it["code"]: it for it in data["items"]}
+    rows = sorted(enumerate(data["movements"]),
+                  key=lambda r: (r[1]["date"], r[1].get("saved_at", ""), r[0]), reverse=True)
+    rows = [m for _, m in rows]
+    if not rows:
+        st.caption(f"ยังไม่มีการเข้า-ออกใน {stock.HISTORY_DAYS} วันที่ผ่านมา")
+        return
+    f1, f2 = st.columns([3, 1])
+    q = f1.text_input("ค้นหา", placeholder="ค้นหาชื่อสินค้าหรือรหัส...", label_visibility="collapsed",
+                      key="all_hist_q").strip().lower()
+    cat = f2.selectbox("หมวด", ["ทุกหมวด"] + list(CATEGORIES), label_visibility="collapsed", key="all_hist_cat")
+    if q or cat != "ทุกหมวด":
+        def keep(m: dict) -> bool:
+            it = items.get(m["code"], {})
+            return ((cat == "ทุกหมวด" or it.get("category") == cat)
+                    and (not q or q in m["code"].lower() or q in it.get("name", "").lower()))
+        rows = [m for m in rows if keep(m)]
+    st.caption(f"{len(rows)} รายการ ย้อนหลัง {stock.HISTORY_DAYS} วัน (ใหม่สุดอยู่บน)")
+    if rows:
+        st.dataframe(history_rows(rows, items), hide_index=True, width="stretch",
+                     height=min(38 + 35 * len(rows), 560))
 
 
 @st.dialog("📜 ประวัติการเข้า-ออก", width="large")
-def history_dialog(data: dict) -> None:
-    items = {it["code"]: it for it in data["items"]}
-    code = st.selectbox(
-        "สินค้า", list(items), index=None, format_func=lambda c: item_label(items[c]),
-        placeholder="พิมพ์ชื่อสินค้าหรือรหัส", key="hist_search",
-    )
-    if code is None:
-        st.caption("พิมพ์ชื่อหรือรหัสในช่องด้านบน แล้วเลือกสินค้าที่ต้องการ")
-        return
-    item = items[code]
+def history_dialog(data: dict, code: str) -> None:
+    item = stock.find(data, code)
     last = stock.last_movement(data).get(code)
     unit = item["unit"]
     s = stock.status(item)
@@ -330,16 +392,7 @@ def history_dialog(data: dict) -> None:
         st.caption(f"ยังไม่มีการเข้า-ออกใน {stock.HISTORY_DAYS} วันที่ผ่านมา")
     else:
         st.caption(f"{len(rows)} รายการ ย้อนหลัง {stock.HISTORY_DAYS} วัน • ล่าสุด {fmt_date(last)}")
-        st.dataframe(pd.DataFrame([{
-            "วันที่": fmt_date(m["date"]),
-            "เข้า (+)": fmt_num(m["in"]) if m["in"] else "",
-            "ออก (−)": fmt_num(m["out"]) if m["out"] else "",
-            "ยอดก่อน": fmt_num(m["before"]),
-            "นับใหม่": fmt_num(m["count"]) if m["count"] != m["before"] else "",
-            "ยอดหลัง": f"{fmt_num(m['after'])} {unit}".strip(),
-            "วันหมดอายุ": fmt_date(m["exp"]),
-            "บันทึกเมื่อ": m.get("saved_at", ""),
-        } for m in rows]), hide_index=True, width="stretch")
+        st.dataframe(history_rows(rows, unit=unit), hide_index=True, width="stretch")
 
     with st.expander("🗓️ แก้ล็อตวันหมดอายุ (ถ้ากรอกวันผิด)"):
         st.caption(f"ยอดในสต็อก {fmt_num(item['qty'])} {unit} — รวมทุกล็อตต้องไม่เกินยอดนี้ "
