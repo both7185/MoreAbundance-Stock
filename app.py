@@ -11,6 +11,7 @@ Tabs
 """
 from __future__ import annotations
 
+import hashlib
 import importlib
 import os
 import sys
@@ -430,24 +431,26 @@ def cost_editor(summary, products: list[dict], sup: dict) -> None:
                    "กด 💾 เพื่อบันทึกลงข้อมูลสินค้า (แท็บ 🗂️) ให้ใช้กับใบสั่งซื้อครั้งต่อไปด้วย • ว่าง = ยังไม่รู้ทุน"
                    + (f"  \n{n_unmatched} รายการที่ยังไม่อยู่ในข้อมูลสินค้าไม่แสดงที่นี่ — เพิ่มสินค้าก่อนแล้วค่อยใส่ทุน"
                       if n_unmatched else ""))
-        df = pd.DataFrame(list(items.values()))
         ver = st.session_state.get("products_ver", 0)
-        edited = st.data_editor(
-            df,
-            hide_index=True,
-            width="stretch",
-            height=min(36 * (len(df) + 1), 420),
-            disabled=["รายการ", "หน่วย", "ราคา/หน่วย"],
-            column_config={
-                "ราคา/หน่วย": st.column_config.TextColumn(help="ราคาในใบสั่งซื้อ"),
-                "ทุน": st.column_config.NumberColumn(min_value=0, format="localized", help="ทุนต่อหน่วย"),
-            },
-            key=f"cost_editor_{ver}_" + "|".join(items),
-        )
-        new_cost = {}
-        for rec in edited.to_dict("records"):
-            v = rec["ทุน"]
-            new_cost[rec["รายการ"]] = None if v is None or pd.isna(v) else float(v)
+        widths = [4, 1.2, 2, 2]
+        for c, h in zip(st.columns(widths), ["รายการ", "หน่วย", "ราคา/หน่วย", "ทุน (ต่อหน่วย)"]):
+            c.markdown(f"**{h}**")
+        new_cost, empty_keys = {}, []
+        with st.container(height=min(56 * len(items) + 20, 460), border=False):
+            for name, rec in items.items():
+                c1, c2, c3, c4 = st.columns(widths, vertical_alignment="center")
+                c1.write(name)
+                c2.write(rec["หน่วย"])
+                c3.write(rec["ราคา/หน่วย"])
+                key = f"cost_{ver}_" + hashlib.md5(name.encode()).hexdigest()[:12]
+                v = c4.number_input("ทุน", value=rec["ทุน"], min_value=0.0, step=1.0, format="%g",
+                                    placeholder="ยังไม่มีทุน", label_visibility="collapsed", key=key)
+                new_cost[name] = None if v is None else float(v)
+                if v is None:
+                    empty_keys.append(key)
+        if empty_keys:   # empty ทุน boxes: yellow, like the empty cells in the table and the Excel
+            st.markdown("<style>" + ", ".join(f".st-key-{k} input" for k in empty_keys)
+                        + " { background-color: #fff3a0 !important; }</style>", unsafe_allow_html=True)
         changes = {n: c for n, c in new_cost.items() if c != items[n]["ทุน"]}
 
         for r in summary.rows:   # typed costs apply to the preview + Excel even before saving
