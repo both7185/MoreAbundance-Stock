@@ -1,8 +1,8 @@
 """
 หน้า 📦 สต็อกสินค้า (separate from the PO pages). Data logic lives in stock.py.
 
-* Main table: click 📜 ดูประวัติ at the end of a row for that item's in/out history in a pop-up (and to fix its
-  expiry lots). ✏️ แก้ไขตาราง switches the table to editing name / หมวด / หน่วย / ขั้นต่ำ (💾 บันทึก).
+* Main table: click 📜 ดูประวัติ at the end of a row for that item's in/out history in a pop-up; click the
+  วันหมดอายุ cell to edit its expiry lots (one lot per line). ✏️ แก้ไขตาราง switches the table to editing name / หมวด / หน่วย / ขั้นต่ำ (💾 บันทึก).
 * 📜 ประวัติทั้งหมด: every item's movements in one pop-up.
 * ➕➖ เข้า-ออกสินค้า: search an item, then เข้า / ออก / จำนวนในสต็อก / วันหมดอายุ / วันที่บันทึก → ยอดใหม่.
 * 🆕 เพิ่มสินค้าใหม่: name, รหัส, หมวด only — quantities come from เข้า-ออกสินค้า.
@@ -70,14 +70,27 @@ def save(change, message: str) -> bool:
     return True
 
 
-def lots_text(item: dict) -> str:
-    """All expiry dates of an item, earliest first: '26/03/2027 (20) · 01/05/2027 (12)'."""
+MAX_LOT_LINES = 3   # the table shows at most this many lots per row (every row gets the same height)
+NBSP = "\u00a0"
+
+
+def lots_text(item: dict, sep: str = " · ", limit: int | None = None) -> str:
+    """Expiry dates of an item, earliest first: '26/03/2027 (20) · 01/05/2027 (12)'.
+    With `limit`, the last part says how many more lots there are."""
     today = stock.today().isoformat()
     parts = []
     for lot in item["lots"]:
         mark = "⚠️ " if lot["exp"] < today else ""
         parts.append(f"{mark}{fmt_date(lot['exp'])} ({fmt_num(lot['qty'])})")
-    return " · ".join(parts)
+    if limit and len(parts) > limit:
+        parts = parts[:limit - 1] + [f"…อีก {len(parts) - limit + 1} ล็อต"]
+    return sep.join(parts)
+
+
+def lots_cell(item: dict) -> str:
+    """Expiry column of the main table: one lot per line. The table cell ignores line breaks, so each lot is
+    glued with non-breaking spaces and the column is too narrow for two lots — the wrap puts each on its own line."""
+    return " ".join(p.replace(" ", NBSP) for p in lots_text(item, " · ", MAX_LOT_LINES).split(" · "))
 
 
 def item_label(item: dict) -> str:
@@ -189,6 +202,7 @@ def render(show_flash=None) -> None:
     if show_flash:
         show_flash()
     st.caption("ดูยอดคงเหลือของสินค้าทั้งหมด • กด **📜 ดูประวัติ** ท้ายแถวเพื่อดูการเข้า-ออกของสินค้านั้น • "
+               "กดช่อง **วันหมดอายุ** เพื่อแก้วันหมดอายุ • "
                "เปิด **✏️ แก้ไขตาราง** เพื่อแก้ ชื่อสินค้า / หมวด / หน่วย / ขั้นต่ำ "
                "(ย้ายหมวด = ได้รหัสใหม่เป็นเลขถัดไปของหมวดนั้น)")
     if not github_config(st.secrets):
@@ -207,9 +221,12 @@ def render(show_flash=None) -> None:
         add_dialog(data)
     if b3.button("📜 ประวัติทั้งหมด", width="stretch", disabled=dirty):
         all_history_dialog(data)
-    open_code = st.session_state.pop("hist_open", None)   # set by a 📜 click in the table, see below
+    open_code = st.session_state.pop("hist_open", None)   # set by a click in the table, see below
     if open_code and stock.find(data, open_code):
         history_dialog(data, open_code)
+    exp_code = st.session_state.pop("exp_open", None)
+    if exp_code and stock.find(data, exp_code):
+        expiry_dialog(data, exp_code)
 
     f1, f2 = st.columns([3, 1])
     query = f1.text_input("ค้นหา", placeholder="ค้นหาชื่อสินค้าหรือรหัส...", label_visibility="collapsed",
@@ -236,15 +253,19 @@ def render(show_flash=None) -> None:
                 f"color:{fg};background-color:{bg};font-weight:600" if c == C_STATUS else "" for c in row.index]
 
     base_config = {
-        C_NAME: st.column_config.TextColumn(width="medium"),
-        C_CODE: st.column_config.TextColumn(width="small"),
+        C_NAME: st.column_config.TextColumn(width=230),
+        C_CODE: st.column_config.TextColumn(width=70),
+        C_CAT: st.column_config.TextColumn(width=95),
         C_QTY: st.column_config.NumberColumn(width=115, help="เปลี่ยนยอดที่ปุ่ม ➕➖ เข้า-ออกสินค้า"),
-        C_UNIT: st.column_config.TextColumn(width="small"),
-        C_MIN: st.column_config.NumberColumn(width="small", help="ต่ำกว่าขั้นต่ำ = Low stock • 0 = Out of stock"),
+        C_UNIT: st.column_config.TextColumn(width=70),
+        C_MIN: st.column_config.NumberColumn(width=70, help="ต่ำกว่าขั้นต่ำ = Low stock • 0 = Out of stock"),
         C_STATUS: st.column_config.TextColumn(width=110),
-        C_EXP: st.column_config.TextColumn(width="medium", help="ทุกล็อตที่ยังเหลือ (จำนวน) • ⚠️ = หมดอายุแล้ว"),
+        C_EXP: st.column_config.TextColumn(width=175, help="ทุกล็อตที่ยังเหลือ (จำนวน) • ⚠️ = หมดอายุแล้ว "
+                                                               "• กดเพื่อแก้วันหมดอายุ"),
     }
-    height = min(38 + 35 * len(view), 640)
+    lines = min(max([len(it["lots"]) for it in view] + [1]), MAX_LOT_LINES)   # one lot per line
+    row_height = 35 if lines == 1 else 12 + 21 * lines
+    height = min(38 + row_height * len(view), 700)
     if st.session_state.pop("stock_edit_off", False):
         st.session_state["stock_edit"] = False
     editing = st.toggle("✏️ แก้ไขตาราง (ชื่อสินค้า / หมวด / หน่วย / ขั้นต่ำ)", key="stock_edit", disabled=dirty,
@@ -254,19 +275,20 @@ def render(show_flash=None) -> None:
         # ---- view: click 📜 ดูประวัติ in a row -> that item's history pop-up
         df = pd.DataFrame([{
             C_NAME: it["name"], C_CODE: it["code"], C_CAT: it["category"], C_QTY: it["qty"], C_UNIT: it["unit"],
-            C_MIN: it["min"], C_STATUS: STATUS_TH[stock.status(it)], C_EXP: lots_text(it), C_HIST: "📜 ดูประวัติ",
+            C_MIN: it["min"], C_STATUS: STATUS_TH[stock.status(it)], C_EXP: lots_cell(it), C_HIST: "📜 ดูประวัติ",
         } for it in view])
         event = st.dataframe(
             df.style.apply(row_colors, axis=1).format({C_QTY: fmt_num, C_MIN: fmt_num}),
-            hide_index=True, width="stretch", height=height,
+            hide_index=True, width="content", height=height, row_height=row_height,
             column_config={**base_config,
                            C_HIST: st.column_config.TextColumn(width=110, help="กดเพื่อดูประวัติการเข้า-ออก")},
             on_select="rerun", selection_mode="single-cell",
             key=f"stock_table_{st.session_state.get('hist_ver', 0)}_{cat_filter}_{q}",
         )
         cells = event.selection.cells if event else []
-        if cells and cells[0][1] == C_HIST and 0 <= cells[0][0] < len(view):
-            st.session_state["hist_open"] = view[cells[0][0]]["code"]
+        if cells and cells[0][1] in (C_HIST, C_EXP) and 0 <= cells[0][0] < len(view):
+            target = "hist_open" if cells[0][1] == C_HIST else "exp_open"
+            st.session_state[target] = view[cells[0][0]]["code"]
             st.session_state["hist_ver"] = st.session_state.get("hist_ver", 0) + 1   # clear the selection
             st.rerun()
         return
@@ -274,20 +296,21 @@ def render(show_flash=None) -> None:
     # ---- edit: name / หมวด / หน่วย / ขั้นต่ำ
     df = pd.DataFrame([{
         C_NAME: it["name"], C_CODE: it["code"], C_CAT: it["category"], C_QTY: it["qty"], C_UNIT: it["unit"],
-        C_MIN: it["min"], C_STATUS: STATUS_TH[stock.status(it)], C_EXP: lots_text(it),
+        C_MIN: it["min"], C_STATUS: STATUS_TH[stock.status(it)], C_EXP: lots_cell(it),
     } for it in view])
     edited = st.data_editor(
         df.style.apply(row_colors, axis=1).format({C_QTY: fmt_num, C_MIN: fmt_num}),
         hide_index=True,
-        width="stretch",
+        width="content",
         height=height,
+        row_height=row_height,
         disabled=[C_CODE, C_QTY, C_STATUS, C_EXP],
         column_config={
             **base_config,
-            C_NAME: st.column_config.TextColumn(required=True, width="medium"),
-            C_CAT: st.column_config.SelectboxColumn(options=list(CATEGORIES), required=True,
+            C_NAME: st.column_config.TextColumn(required=True, width=230),
+            C_CAT: st.column_config.SelectboxColumn(options=list(CATEGORIES), required=True, width=110,
                                                     help="ย้ายหมวด = ได้รหัสใหม่ (ตัวอักษรหมวด + เลขถัดไป) ตอนบันทึก"),
-            C_MIN: st.column_config.NumberColumn(min_value=0, width="small", format="localized",
+            C_MIN: st.column_config.NumberColumn(min_value=0, width=70, format="localized",
                                                  help="ต่ำกว่าขั้นต่ำ = Low stock • 0 = Out of stock"),
         },
         key=f"stock_editor_{ver}_{cat_filter}_{q}",
@@ -394,24 +417,36 @@ def history_dialog(data: dict, code: str) -> None:
         st.caption(f"{len(rows)} รายการ ย้อนหลัง {stock.HISTORY_DAYS} วัน • ล่าสุด {fmt_date(last)}")
         st.dataframe(history_rows(rows, unit=unit), hide_index=True, width="stretch")
 
-    with st.expander("🗓️ แก้ล็อตวันหมดอายุ (ถ้ากรอกวันผิด)"):
-        st.caption(f"ยอดในสต็อก {fmt_num(item['qty'])} {unit} — รวมทุกล็อตต้องไม่เกินยอดนี้ "
-                   "(ส่วนที่ไม่ได้อยู่ในล็อต = ไม่รู้วันหมดอายุ) • ลบแถว: ติ๊กหน้าแถวแล้วกดถังขยะ")
-        lots_df = pd.DataFrame({"วันหมดอายุ": pd.to_datetime([l["exp"] for l in item["lots"]]).date,
-                                "จำนวน": [float(l["qty"]) for l in item["lots"]]})
-        ver = st.session_state.get("stock_ver", 0)
-        lots = st.data_editor(
-            lots_df, num_rows="dynamic", hide_index=True, key=f"lots_{item['code']}_{ver}",
-            column_config={
-                "วันหมดอายุ": st.column_config.DateColumn(format="DD/MM/YYYY", required=True),
-                "จำนวน": st.column_config.NumberColumn(min_value=0, required=True, format="localized"),
-            },
-        )
-        new_lots = [(d, q) for d, q in zip(lots["วันหมดอายุ"], lots["จำนวน"])
-                    if not pd.isna(d) and not pd.isna(q)]
-        current = [(pd.Timestamp(l["exp"]).date(), float(l["qty"])) for l in item["lots"]]
-        if st.button("💾 บันทึกล็อต", key=f"lots_save_{item['code']}", disabled=new_lots == current):
-            lots_arg = [(pd.Timestamp(d).date(), q) for d, q in new_lots]
-            if save(lambda d: stock.set_lots(d, item["code"], lots_arg),
-                    f"Stock: แก้ล็อตวันหมดอายุ {item['name']} ({item['code']})"):
-                st.rerun()
+    st.caption("แก้วันหมดอายุ: กดช่อง วันหมดอายุ ของสินค้านี้ในตาราง")
+
+
+@st.dialog("🗓️ แก้วันหมดอายุ", width="large")
+def expiry_dialog(data: dict, code: str) -> None:
+    item = stock.find(data, code)
+    unit = item["unit"]
+    dated = sum(l["qty"] for l in item["lots"])
+    st.markdown(f"**{item['name']}** ({item['code']}) — ในสต็อก **{fmt_num(item['qty'])} {unit}**".rstrip())
+    st.caption(f"มีวันหมดอายุ {fmt_num(dated)} • ไม่รู้วันหมดอายุ {fmt_num(stock.num(item['qty'] - dated))} — "
+               "รวมทุกล็อตต้องไม่เกินยอดในสต็อก • แก้วันที่ / จำนวนในตารางได้เลย • "
+               "เพิ่มล็อต: ปุ่ม + ใต้ตาราง • ลบล็อต: ติ๊กหน้าแถวแล้วกดถังขยะ")
+    lots_df = pd.DataFrame({"วันหมดอายุ": pd.to_datetime([l["exp"] for l in item["lots"]]).date,
+                            "จำนวน": [float(l["qty"]) for l in item["lots"]]})
+    ver = st.session_state.get("stock_ver", 0)
+    lots = st.data_editor(
+        lots_df, num_rows="dynamic", hide_index=True, width="stretch", key=f"lots_{code}_{ver}",
+        column_config={
+            "วันหมดอายุ": st.column_config.DateColumn(format="DD/MM/YYYY", required=True),
+            "จำนวน": st.column_config.NumberColumn(min_value=0, required=True, format="localized"),
+        },
+    )
+    new_lots = [(pd.Timestamp(d).date(), float(q)) for d, q in zip(lots["วันหมดอายุ"], lots["จำนวน"])
+                if not pd.isna(d) and not pd.isna(q)]
+    current = [(pd.Timestamp(l["exp"]).date(), float(l["qty"])) for l in item["lots"]]
+    total = stock.num(sum(q for _, q in new_lots))
+    if total > item["qty"]:
+        st.error(f"รวมทุกล็อต {fmt_num(total)} เกินยอดในสต็อก {fmt_num(item['qty'])} {unit}")
+    if st.button("💾 บันทึกวันหมดอายุ", type="primary", key=f"lots_save_{code}",
+                 disabled=new_lots == current or total > item["qty"]):
+        if save(lambda d: stock.set_lots(d, code, new_lots),
+                f"Stock: แก้วันหมดอายุ {item['name']} ({code})"):
+            st.rerun()
