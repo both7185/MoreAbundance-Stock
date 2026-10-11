@@ -680,6 +680,15 @@
    "qty": 0,
    "min": 0,
    "lots": []
+  },
+  {
+   "code": "X-004",
+   "name": "กล่องโฟม",
+   "category": "อื่นๆ",
+   "unit": "กล่อง",
+   "qty": 0,
+   "min": 0,
+   "lots": []
   }
  ],
  "movements": [
