@@ -70,12 +70,16 @@ A separate page (sidebar), not linked to the PO features. Data: `stock.json`.
   the category letter + the next number of that category (history follows the item).
 * **Status** from ขั้นต่ำ: 0 = Out of stock (red), below ขั้นต่ำ = Low stock (orange), otherwise Available (green).
 * **➕➖ เข้า-ออกสินค้า**: search by name or code, then เข้า / ออก / จำนวนในสต็อก (change it for a re-count) / วันหมดอายุ (optional) /
-  วันที่บันทึก → ยอดหลังบันทึก. Stock at 0 cannot be taken out. Taking out uses the earliest expiry first.
+  วันที่บันทึก → ยอดหลังบันทึก. Stock at 0 cannot be taken out. When the item has expiry lots, pick which lot the ออก
+  comes from (the earliest expiry is picked first); what that lot cannot cover comes from the next-earliest lots.
+  The history shows which lots went out.
 * **วันหมดอายุ** lists every lot still in stock with its quantity, one per line (up to 3, then "…อีก N ล็อต").
   Click the cell to edit the dates / quantities, add or delete lots.
 * **ประวัติ**: click 📜 ดูประวัติ at the end of a row to open that item's movements in a pop-up (closed with ✕).
   The 📜 ประวัติทั้งหมด button shows every item's movements in one pop-up. Kept for 90 days.
 * **🆕 เพิ่มสินค้าใหม่**: name, code (suggested automatically) and หมวด only.
+* **🗑️ ลบสินค้า**: search the item, tick the confirmation, delete. Its old movements stay in 📜 ประวัติทั้งหมด
+  (marked ลบแล้ว), and its code is not reused while they are there.
 * Codes: ของสด M · ของแปรรูป P · ผัก V · ผลไม้ F · เครื่องปรุง I · ของแห้ง D · เครื่องดื่ม B · ของหวาน S · อื่นๆ X (e.g. `I-001`).
 
 ### Where the website keeps its data (GitHub `data` branch)

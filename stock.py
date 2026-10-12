@@ -12,15 +12,18 @@ Everything is one JSON file, stock.json, saved to the GitHub *data* branch like 
       ],
       "movements": [
         {"id": "...", "code": "I-001", "date": "2026-10-10", "in": 12, "out": 0,
-         "before": 20, "count": 20, "after": 32, "exp": "2027-05-01", "saved_at": "2026-10-10 16:30"}
+         "before": 20, "count": 20, "after": 32, "exp": "2027-05-01", "saved_at": "2026-10-10 16:30"},
+        {..., "out": 5, "out_lots": [{"exp": "2027-03-26", "qty": 5}]}    # which lots the 5 came from
       ]
     }
 
 * code   = category letter + running number (M-001). Moving an item to another category gives it
            the next number of that category (highest number in use + 1).
 * lots   = how much of the stock has which expiry date. Stock without a known date is not in a lot,
-           so sum(lots) <= qty. Taking stock out uses the earliest expiry first.
-* movements are kept for HISTORY_DAYS days (by the record date).
+           so sum(lots) <= qty. Taking stock out uses the lot the user picked (default: the earliest
+           expiry), then the next-earliest lots, then the stock without a date.
+* movements are kept for HISTORY_DAYS days (by the record date). Deleting an item keeps its movements
+           (with the item's name and unit added) so the history still shows what it was.
 """
 from __future__ import annotations
 
@@ -196,17 +199,55 @@ def _add_lot(item: dict, exp: str, qty: float) -> None:
     item["lots"].sort(key=lambda l: l["exp"])
 
 
+def _take_out(item: dict, amount: float, lot: str | None = None) -> list[dict]:
+    """
+    Take `amount` out of the current stock (item["qty"] is lowered by the caller) and return where it came
+    from: [{"exp": "2027-06-24", "qty": 5}, ...], exp "" = stock without an expiry date.
+    lot = the expiry date the user picked to take from first ("" = the undated stock, None = earliest);
+    whatever that lot cannot cover comes from the earliest other lots, then from the undated stock.
+    """
+    item["lots"].sort(key=lambda l: l["exp"])
+    undated = num(item["qty"] - sum(l["qty"] for l in item["lots"]))
+    sources = [l for l in item["lots"] if l["exp"] == lot] + [l for l in item["lots"] if l["exp"] != lot]
+    taken = []
+    if lot == "" and undated > 0:
+        take = min(undated, amount)
+        taken.append({"exp": "", "qty": take})
+        amount = num(amount - take)
+        undated = num(undated - take)
+    for l in sources:
+        if amount <= 0:
+            break
+        take = min(l["qty"], amount)
+        l["qty"] = num(l["qty"] - take)
+        amount = num(amount - take)
+        taken.append({"exp": l["exp"], "qty": take})
+    if amount > 0 and undated > 0:
+        taken.append({"exp": "", "qty": min(undated, amount)})
+    item["lots"] = [l for l in item["lots"] if l["qty"] > 0]
+    return taken
+
+
+def plan_out(item: dict, count, qty_out, lot: str | None = None) -> list[dict]:
+    """Preview of _take_out() for the entry form (does not change `item`)."""
+    copy = {**item, "qty": num(count), "lots": [dict(l) for l in item["lots"]]}
+    _fit_lots(copy)
+    return _take_out(copy, num(qty_out), lot)
+
+
 def prune(data: dict, ref: date | None = None) -> None:
     cutoff = ((ref or today()) - timedelta(days=HISTORY_DAYS)).isoformat()
     data["movements"] = [m for m in data["movements"] if m["date"] >= cutoff]
 
 
-def record(data: dict, code: str, qty_in, qty_out, count, exp: date | None, on: date) -> str:
+def record(data: dict, code: str, qty_in, qty_out, count, exp: date | None, on: date,
+           lot: str | None = None) -> str:
     """
     One stock entry (ปุ่ม เข้า-ออกสินค้า):
       count = stock before this entry: None = the current stock, another number = re-count
       after = count + in - out
       exp   = expiry of what came in; with nothing coming in it dates the stock that has no date yet
+      lot   = expiry date of the lot to take `out` from ("" = stock without a date, None = earliest first)
     """
     item = find(data, code)
     if item is None:
@@ -228,8 +269,7 @@ def record(data: dict, code: str, qty_in, qty_out, count, exp: date | None, on: 
     before = item["qty"]
     item["qty"] = count
     _fit_lots(item)                      # re-count lower than the dated stock
-    if qty_out:
-        _trim_lots(item, qty_out)        # earliest expiry goes out first
+    out_lots = _take_out(item, qty_out, lot) if qty_out else []
     item["qty"] = after
     _fit_lots(item)
     if exp is not None:
@@ -240,6 +280,7 @@ def record(data: dict, code: str, qty_in, qty_out, count, exp: date | None, on: 
         "id": uuid.uuid4().hex[:12], "code": code, "date": on.isoformat(),
         "in": qty_in, "out": qty_out, "before": before, "count": count, "after": after,
         "exp": exp.isoformat() if exp else "", "saved_at": now_text(),
+        **({"out_lots": out_lots} if out_lots else {}),
     })
     prune(data)
     return ""
@@ -257,6 +298,9 @@ def add_item(data: dict, name: str, code: str, category: str, unit: str = "") ->
         return f"รหัส {code} มีอยู่แล้ว ({find(data, code)['name']})"
     if any(it["name"] == name for it in data["items"]):
         return f"มีสินค้าชื่อ {name} อยู่แล้ว"
+    old = next((m for m in data["movements"] if m["code"] == code), None)
+    if old:
+        return f"รหัส {code} เคยใช้กับ {old.get('name') or 'สินค้าที่ลบไปแล้ว'} (ยังอยู่ในประวัติ) — ใช้รหัสอื่น"
     data["items"].append({"code": code, "name": name, "category": category, "unit": unit,
                           "qty": 0, "min": 0, "lots": []})
     data["items"].sort(key=sort_key)
@@ -303,4 +347,16 @@ def set_lots(data: dict, code: str, lots: list[tuple[date, float]]) -> str:
     if sum(merged.values()) > item["qty"]:
         return f"รวมทุกล็อตต้องไม่เกินยอดในสต็อก ({fmt_num(item['qty'])})"
     item["lots"] = [{"exp": e, "qty": q} for e, q in sorted(merged.items())]
+    return ""
+
+
+def delete_item(data: dict, code: str) -> str:
+    """Remove an item. Its movements stay in the history (with the name) until they age out."""
+    item = find(data, code)
+    if item is None:
+        return f"ไม่พบสินค้ารหัส {code}"
+    data["items"].remove(item)
+    for m in data["movements"]:
+        if m["code"] == code:
+            m.update(name=item["name"], unit=item["unit"])
     return ""
