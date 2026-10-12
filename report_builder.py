@@ -95,6 +95,7 @@ class SummaryRow:
     po_names: set = field(default_factory=set)   # names exactly as printed in the POs
     qty_by_col: dict[Col, float] = field(default_factory=dict)
     cost: float | None = None  # ทุน per unit from products.csv (None = unknown)
+    data_price: float | None = None  # ราคาต่อหน่วย from products.csv (None = unknown), for the price check
 
 
 @dataclass
@@ -169,6 +170,7 @@ def aggregate(
                     sup_no=info.sup_no if info else "", matched=info is not None,
                     product_name=info.name if info else "",
                     cost=getattr(info, "cost", None) if info else None,
+                    data_price=getattr(info, "price", None) if info else None,
                 )
                 order_of[key] = info.order if info else 10**9
             row.po_names.add(it.name)
@@ -185,6 +187,45 @@ def aggregate(
     )
     columns = sorted(po_totals, key=col_sort_key)
     return Summary(columns, [r for _, r in rows], po_totals, po_numbers, files_by_col)
+
+
+def price_check(summary: Summary) -> list[dict]:
+    """
+    ราคา/หน่วย on the POs vs ราคาต่อหน่วย in the product list, one record per summary row (item + price).
+    Check only: nothing in the POs or the Excel changes. status: 'ok' | 'diff' | 'no_price' | 'not_found'.
+    """
+    out = []
+    for r in summary.rows:
+        if not r.matched:
+            status = "not_found"
+        elif r.data_price is None:
+            status = "no_price"
+        elif abs(r.unit_price - r.data_price) < 0.005:
+            status = "ok"
+        else:
+            status = "diff"
+        out.append({
+            "row": r, "status": status,
+            "diff": None if r.data_price is None or not r.matched else round(r.unit_price - r.data_price, 4),
+            "columns": [c for c in summary.columns if c in r.qty_by_col],
+        })
+    return out
+
+
+def latest_prices(summary: Summary) -> dict[str, tuple[float, Col]]:
+    """
+    Product name -> (ราคา/หน่วย, column) from the latest column (date, then tag order) that has it.
+    Only products in the product list. Used to fill ราคาต่อหน่วย in the product data.
+    """
+    best: dict[str, tuple[float, Col]] = {}
+    for r in summary.rows:
+        if not r.matched:
+            continue
+        col = max(r.qty_by_col, key=col_sort_key)
+        cur = best.get(r.product_name)
+        if cur is None or col_sort_key(col) > col_sort_key(cur[1]):
+            best[r.product_name] = (r.unit_price, col)
+    return best
 
 
 def date_range_label(dates: list[date]) -> str:

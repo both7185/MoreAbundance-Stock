@@ -24,6 +24,12 @@ python -m venv .venv
 .venv/bin/streamlit run app.py
 ```
 
+**4. เทียบราคาต่อหน่วยกับข้อมูลสินค้า** (bottom of the page) compares each item's ราคา/หน่วย in these POs with
+**ราคาต่อหน่วย** in the product data: ✅ same, ❌ different (red row, with PO − Data), ➖ no price in the data yet,
+⚠️ not in the product data. It is a check only: the POs, the table and the Excel do not change.
+**💾 อัปเดตราคาต่อหน่วยใน Data** under it copies the price from the latest-dated PO of each product in the upload
+into the product data (products already in the data only), after showing the list.
+
 ## Monthly total tab (📅 รวมยอดทั้งเดือน)
 
 Upload all of a month's POs (many PDFs, or one `.zip` of the folder). You get an Excel file with two columns,
@@ -43,6 +49,7 @@ Upload all of a month's POs (many PDFs, or one `.zip` of the folder). You get an
   the saved list order (ลำดับ) does not change. That order decides the sequence of products that share a Sup no. in the Excel.
 * **ร้านหลัก** is a dropdown of shops. **Sup no. follows the shop automatically**, like the old XLOOKUP. To change a code
   or add a shop, use the 🏷️ tab.
+* **ราคาต่อหน่วย** (before ทุน) is the selling price per unit as on the POs. The PO page compares against it (step 4).
 * **ชื่อใน PO** lists other spellings used in POs, separated by `|` (e.g. `ปลาช่อน | ปลาช่อนสด`).
 * Download as Excel, or import an Excel file such as `DATA P BOTH.xlsx`. Importing **replaces** the whole list.
 

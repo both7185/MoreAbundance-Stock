@@ -2,6 +2,8 @@
 Product master data ("Data P Both"): หมวดหมู่ + Sup no. for every product.
 
 * Stored in products.csv (UTF-8) next to the app. One row per product.
+* ราคาต่อหน่วย (selling price per unit, as on the POs) is optional. The PO page compares each PO's
+  ราคา/หน่วย with it (check only, nothing in the PO changes).
 * ทุน (cost per unit) is optional: blank = not known yet. The daily Excel uses it for ทุนรวม / กำไร.
 * A PO item is matched to a product by name, ignoring spaces. Extra spellings used in POs can be
   listed in the 'ชื่อใน PO' column, separated by '|'.
@@ -31,11 +33,12 @@ COL_NO = "ลำดับ"
 COL_CAT = "หมวดหมู่"
 COL_NAME = "รายการ"
 COL_UNIT = "หน่วยนับ"
+COL_PRICE = "ราคาต่อหน่วย"        # selling price per unit as on the POs (number, blank = unknown)
 COL_COST = "ทุน"                  # cost per unit (number, blank = unknown)
 COL_SUPPLIER = "ร้านหลัก"
 COL_SUP = "Sup no."
 COL_ALIAS = "ชื่อใน PO"           # other spellings found in POs, separated by |
-COLUMNS = [COL_NO, COL_CAT, COL_NAME, COL_UNIT, COL_COST, COL_SUPPLIER, COL_SUP, COL_ALIAS]
+COLUMNS = [COL_NO, COL_CAT, COL_NAME, COL_UNIT, COL_PRICE, COL_COST, COL_SUPPLIER, COL_SUP, COL_ALIAS]
 
 LETTER_ORDER = ["A", "C", "M", "S", "X"]
 SUP_RE = re.compile(r"^\s*([A-Za-z]+)\s*-?\s*(\d+)\s*$")
@@ -136,6 +139,7 @@ def normalize_rows(rows: list[dict], shop_codes: dict[str, str] | None = None) -
         if not row[COL_NAME]:
             continue
         row[COL_SUP] = format_sup(row[COL_SUP])
+        row[COL_PRICE] = format_cost(row[COL_PRICE])
         row[COL_COST] = format_cost(row[COL_COST])
         row[COL_ALIAS] = " | ".join(split_aliases(row[COL_ALIAS]))
         out.append(row)
@@ -192,6 +196,8 @@ def validate(rows: list[dict]) -> tuple[list[str], list[str]]:
             seen.setdefault(k, r[COL_NAME])
         if r[COL_SUP] and not parse_sup(r[COL_SUP]):
             warnings.append(f"'{r[COL_NAME]}': Sup no. '{r[COL_SUP]}' ไม่อยู่ในรูปแบบ A-001 — จะถูกเรียงไว้ท้าย")
+        if r[COL_PRICE] and parse_cost(r[COL_PRICE]) is None:
+            warnings.append(f"'{r[COL_NAME]}': ราคาต่อหน่วย '{r[COL_PRICE]}' ไม่ใช่ตัวเลข — จะไม่ถูกใช้เทียบราคา")
         if r[COL_COST] and parse_cost(r[COL_COST]) is None:
             warnings.append(f"'{r[COL_NAME]}': ทุน '{r[COL_COST]}' ไม่ใช่ตัวเลข — จะไม่ถูกใช้คำนวณกำไร")
         if not r[COL_SUP]:
@@ -209,12 +215,14 @@ class ProductInfo:
     sup_no: str
     order: int  # row position in the list (tie-break inside the same Sup no.)
     cost: float | None = None  # ทุน per unit, None = unknown
+    price: float | None = None  # ราคาต่อหน่วย, None = unknown
 
 
 def build_lookup(rows: list[dict]) -> dict[str, ProductInfo]:
     lookup: dict[str, ProductInfo] = {}
     for i, r in enumerate(rows):
-        info = ProductInfo(r[COL_NAME], r[COL_CAT], r[COL_SUP], i, parse_cost(r.get(COL_COST)))
+        info = ProductInfo(r[COL_NAME], r[COL_CAT], r[COL_SUP], i, parse_cost(r.get(COL_COST)),
+                           parse_cost(r.get(COL_PRICE)))
         for nm in [r[COL_NAME]] + split_aliases(r[COL_ALIAS]):
             lookup.setdefault(norm(nm), info)
     return lookup
@@ -254,6 +262,7 @@ def add_alias(rows: list[dict], product_name: str, alias: str) -> bool:
 # --------------------------------------------------------------------------- #
 _HEADER_KEYS = {
     COL_CAT: ["หมวดหมู่"], COL_NAME: ["รายการ", "รายการสินค้า", "ชื่อสินค้า"], COL_UNIT: ["หน่วยนับ", "หน่วย"],
+    COL_PRICE: ["ราคาต่อหน่วย", "ราคา/หน่วย", "หน่วยละ"],
     COL_COST: ["ทุน", "ต้นทุน", "ทุน/หน่วย"],
     COL_SUPPLIER: ["ร้านหลัก", "ร้าน"], COL_SUP: ["sup no.", "sup no", "supno", "sup"], COL_ALIAS: ["ชื่อใน po"],
 }
@@ -304,13 +313,13 @@ def export_excel(rows: list[dict]) -> bytes:
             v = r.get(col, "")
             if col == COL_NO and v.isdigit():
                 v = int(v)
-            elif col == COL_COST and parse_cost(v) is not None:
+            elif col in (COL_PRICE, COL_COST) and parse_cost(v) is not None:
                 v = parse_cost(v)
             cell = ws.cell(r_i, c, v)
             cell.font, cell.border = Font(name="Calibri", size=11), border
-            if col == COL_COST:
+            if col in (COL_PRICE, COL_COST):
                 cell.number_format = "#,##0.00##"
-    for col, w in zip("ABCDEFGH", [6, 14, 30, 9, 10, 22, 9, 30]):
+    for col, w in zip("ABCDEFGHI", [6, 14, 30, 9, 12, 10, 22, 9, 30]):
         ws.column_dimensions[col].width = w
     ws.freeze_panes = "A2"
     ws.auto_filter.ref = ws.dimensions
