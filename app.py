@@ -22,8 +22,8 @@ import streamlit as st
 # Streamlit Community Cloud re-reads app.py on every run but keeps the other modules in memory,
 # so after a `git push` the old report_builder.py / products.py ... would keep running until a reboot.
 # Reload any of our modules whose file changed since it was loaded (dependencies first).
-for _name in ("po_extractor", "datastore", "products", "sup_codes", "report_builder", "monthly_report",
-              "stock", "stock_page"):
+for _name in ("po_extractor", "datastore", "supabase_store", "products", "sup_codes", "report_builder", "monthly_report",
+              "storage", "stock", "stock_page"):
     _mod = sys.modules.get(_name)
     if _mod is not None and getattr(_mod, "__file__", None):
         _mtime = os.path.getmtime(_mod.__file__)
@@ -31,15 +31,15 @@ for _name in ("po_extractor", "datastore", "products", "sup_codes", "report_buil
             _mod = importlib.reload(_mod)
         _mod._file_mtime = _mtime
 
-import datastore
 import stock_page
+import storage
 from monthly_report import (
     build_monthly_workbook, build_rows, grand_total, month_label, month_short, pdfs_from_zip, status_text,
 )
 from po_extractor import PurchaseOrder, parse_po
 from products import (
     COL_ALIAS, COL_CAT, COL_COST, COL_NAME, COL_NO, COL_PRICE, COL_SUP, COL_SUPPLIER, COL_UNIT, COLUMNS,
-    add_alias, build_lookup, export_excel, github_config, import_excel, parse_cost, suggest_category,
+    add_alias, build_lookup, export_excel, import_excel, parse_cost, suggest_category,
     load_products, normalize_rows, set_letter_order, suggest, thai_sort_key, to_csv, validate,
     save_products_local,
 )
@@ -121,45 +121,76 @@ def show_flash() -> None:
 
 def _commit(filename: str, content: str, message: str) -> str | None:
     """
-    Commit a data file to the GitHub *data* branch when secrets are set (see datastore.py).
-    Returns an error text, '' if done, None if GitHub is not set up.
+    Save a data file permanently (Supabase, or the GitHub *data* branch — see storage.py).
+    Returns an error text, '' if done, None if no permanent store is set up.
+    Only a failed GitHub backup copy (the save itself done) is shown as a warning, not an error.
     """
-    gh = github_config(st.secrets)
-    if not gh:
+    cfg = storage.config(st.secrets)
+    if not cfg:
         return None
     try:
-        datastore.push(gh, filename, content, message)
-        return ""
+        warning = storage.push(cfg, filename, content, message)
     except Exception as e:
         return str(e)
+    if warning:
+        flash("warning", warning)
+    return ""
 
 
 @st.cache_data(ttl=60, show_spinner=False)
-def _sync_data(repo: str, data_branch: str, path: str) -> tuple[list[str], str]:
-    """Download the data files from the data branch (at most once a minute). Args = cache key."""
-    gh = github_config(st.secrets)
-    if not gh:
-        return [], ""
+def _sync_data(key: str) -> tuple[list[str], list[str], str]:
+    """Download the data files (at most once a minute). `key` = cache key of the settings."""
+    cfg = storage.config(st.secrets)
+    if not cfg:
+        return [], [], ""
     try:
-        return datastore.pull(gh), ""
+        changed, notes = storage.pull(cfg)
+        return changed, notes, ""
     except Exception as e:
-        return [], str(e)
+        return [], [], str(e)
 
 
 def sync_data() -> None:
-    gh = github_config(st.secrets)
-    if gh:
-        _, err = _sync_data(gh["repo"], datastore.data_branch(gh), gh["path"])
-        if err:
-            st.warning(f"ดึงข้อมูลสินค้าล่าสุดจาก GitHub ไม่ได้ — ใช้ข้อมูลที่มีในเครื่องไปก่อน ({err[:150]})")
+    cfg = storage.config(st.secrets)
+    if not cfg:
+        return
+    _, notes, err = _sync_data(storage.cache_key(cfg))
+    if err:
+        st.warning(f"ดึงข้อมูลล่าสุดจาก {storage.where(cfg)} ไม่ได้ — ใช้ข้อมูลที่มีในเครื่องไปก่อน ({err[:150]})")
+    for n in notes:
+        st.info(n)
+    storage_panel(cfg)
+
+
+def storage_panel(cfg: dict) -> None:
+    """Sidebar: where the data is kept, and (while moving to Supabase) a check that both copies match."""
+    with st.sidebar.expander("🗄️ ที่เก็บข้อมูล"):
+        try:
+            name = storage.where(cfg)
+        except Exception as e:
+            st.error(str(e)[:200])
+            return
+        backup = " (สำรองที่ GitHub ทุกครั้งที่บันทึก)" if name == "Supabase" and storage.backup_gh(cfg) else ""
+        st.write(f"เก็บข้อมูลที่ **{name}**{backup}")
+        if name == "Supabase" and cfg["gh"]:
+            if st.button("🔍 เทียบข้อมูล Supabase กับ GitHub", key="storage_compare"):
+                try:
+                    rows = storage.compare(cfg)
+                except Exception as e:
+                    st.error(str(e)[:200])
+                else:
+                    st.dataframe(pd.DataFrame(rows), hide_index=True)
+                    if all(r["ผล"].startswith("✅") for r in rows):
+                        st.success("ข้อมูลตรงกันทุกไฟล์")
 
 
 def _report_save(what: str, results: list[str | None]) -> None:
+    where = storage.where(storage.config(st.secrets))
     if any(r for r in results):
-        flash("error", f"บันทึก{what}ไว้ชั่วคราวแล้ว แต่ส่งขึ้น GitHub ไม่สำเร็จ — กดบันทึกอีกครั้ง "
+        flash("error", f"บันทึก{what}ไว้ชั่วคราวแล้ว แต่ส่งขึ้น {where} ไม่สำเร็จ — กดบันทึกอีกครั้ง "
                        "ไม่อย่างนั้นการแก้ไขจะหายเมื่อแอปรีสตาร์ท: " + "; ".join(r for r in results if r))
     elif all(r == "" for r in results):
-        flash("success", f"บันทึก{what}แล้ว และส่งขึ้น GitHub เรียบร้อย")
+        flash("success", f"บันทึก{what}แล้ว และส่งขึ้น {where} เรียบร้อย")
     else:
         flash("success", f"บันทึก{what}แล้ว")
 
@@ -176,7 +207,7 @@ def current_products(sup: dict | None = None) -> list[dict]:
 
 
 def persist_products(rows: list[dict], message: str, sup: dict | None = None) -> bool:
-    """Validate -> save products.csv -> commit to GitHub when configured. Returns True if saved."""
+    """Validate -> save products.csv -> save permanently when configured. Returns True if saved."""
     rows = normalize_rows(rows, shop_map(sup or current_sup()))
     errors, warnings = validate(rows)
     if errors:
@@ -810,16 +841,16 @@ def products_section() -> None:
     sup = current_sup()
     products = current_products(sup)
     ver = st.session_state.get("products_ver", 0)
-    gh = github_config(st.secrets)
+    cfg = storage.config(st.secrets)
     codes = shop_map(sup)
 
     st.caption("รายการสินค้าที่ใช้กำหนด **หมวดหมู่** **ลำดับการเรียง (Sup no.)** และ **ทุน** ในไฟล์ Excel รวมรายการสินค้า • **ราคาต่อหน่วย** ใช้เทียบราคาในใบสั่งซื้อ  \n"
                "เพิ่มแถว: ปุ่ม **+** มุมขวาบนของตาราง • ลบแถว: ติ๊กช่องหน้าแถวแล้วกดไอคอนถังขยะ • "
                "ค้นหา: ไอคอนแว่นขยาย • แก้เสร็จแล้วกด 💾 บันทึก  \n"
                "**Sup no. ตามร้านหลักอัตโนมัติ** — เปลี่ยนรหัสหรือเพิ่มร้านใหม่ที่แท็บ 🏷️ รหัส Sup")
-    if not gh:
+    if not cfg:
         st.info("💡 ตอนนี้บันทึกลงไฟล์ในเครื่องที่รันแอปเท่านั้น — ถ้าแอปอยู่บน Streamlit Cloud "
-                "การแก้ไขจะหายเมื่อแอปรีสตาร์ท จนกว่าจะตั้งค่า GitHub token (ดู README)")
+                "การแก้ไขจะหายเมื่อแอปรีสตาร์ท จนกว่าจะตั้งค่า Supabase หรือ GitHub ใน Secrets (ดู README)")
 
     c1, c2, c3, c4 = st.columns([1, 1, 1, 2])
     c1.metric("สินค้า", len(products))
@@ -1061,7 +1092,7 @@ def po_sidebar() -> None:
 def po_page() -> None:
     po_sidebar()
     st.title("🧾 สรุปและรวมรายการใบสั่งซื้อ")
-    sync_data()   # products.csv / sup_codes.json / stock.json from the GitHub data branch
+    sync_data()   # products.csv / sup_codes.json / stock.json from Supabase / the GitHub data branch
     show_flash()
     tab_daily, tab_month, tab_data, tab_sup = st.tabs(
         ["📦 รวมรายการสินค้า", "📅 รวมยอดทั้งเดือน", "🗂️ ข้อมูลสินค้า (Data)", "🏷️ รหัส Sup"])

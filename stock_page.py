@@ -16,9 +16,8 @@ from datetime import timedelta
 import pandas as pd
 import streamlit as st
 
-import datastore
 import stock
-from products import github_config
+import storage
 from stock import AVAILABLE, CATEGORIES, LOW, OUT, fmt_date, fmt_num
 
 COLORS = {AVAILABLE: ("#1b7f3b", "#e3f4e8"), LOW: ("#c25e00", "#fdeedd"), OUT: ("#c62828", "#fde4e4")}
@@ -39,18 +38,18 @@ def _bump() -> None:
 
 def save(change, message: str) -> bool:
     """
-    Apply `change(data) -> error text` to the latest stock.json and save it (local file + GitHub data
-    branch when configured). The latest version is downloaded first, so two people saving one after
-    the other do not overwrite each other's entries.
+    Apply `change(data) -> error text` to the latest stock.json and save it (local file + Supabase /
+    GitHub data branch when configured, see storage.py). The latest version is downloaded first, so
+    two people saving one after the other do not overwrite each other's entries.
     """
-    gh = github_config(st.secrets)
+    cfg = storage.config(st.secrets)
     data = None
-    if gh:
+    if cfg:
         try:
-            latest = datastore.fetch(gh, stock.STOCK_FILE)
+            latest = storage.fetch(cfg, stock.STOCK_FILE)
             data = stock.parse(latest) if latest else None
         except Exception as e:
-            st.error(f"ดึงข้อมูลสต็อกล่าสุดจาก GitHub ไม่ได้ — ยังไม่ได้บันทึก ลองใหม่อีกครั้ง ({str(e)[:150]})")
+            st.error(f"ดึงข้อมูลสต็อกล่าสุดไม่ได้ — ยังไม่ได้บันทึก ลองใหม่อีกครั้ง ({str(e)[:150]})")
             return False
     if data is None:
         data = stock.load()
@@ -59,14 +58,16 @@ def save(change, message: str) -> bool:
         st.error(err)
         return False
     stock.save_local(data)
-    if gh:
+    if cfg:
         try:
-            datastore.push(gh, stock.STOCK_FILE, stock.to_json(data), message)
+            warning = storage.push(cfg, stock.STOCK_FILE, stock.to_json(data), message)
         except Exception as e:
-            _flash("error", "บันทึกไว้ชั่วคราวแล้ว แต่ส่งขึ้น GitHub ไม่สำเร็จ — บันทึกอีกครั้ง "
+            _flash("error", f"บันทึกไว้ชั่วคราวแล้ว แต่ส่งขึ้น {storage.where(cfg)} ไม่สำเร็จ — บันทึกอีกครั้ง "
                             f"ไม่อย่างนั้นข้อมูลจะหายเมื่อแอปรีสตาร์ท: {str(e)[:200]}")
             _bump()
             return True
+        if warning:
+            _flash("warning", warning)
     _flash("success", message.replace("Stock: ", "บันทึกแล้ว — ", 1))
     _bump()
     return True
@@ -264,9 +265,9 @@ def render(show_flash=None) -> None:
                "กดช่อง **วันหมดอายุ** เพื่อแก้วันหมดอายุ • "
                "เปิด **✏️ แก้ไขตาราง** เพื่อแก้ ชื่อสินค้า / หมวด / หน่วย / ขั้นต่ำ "
                "(ย้ายหมวด = ได้รหัสใหม่เป็นเลขถัดไปของหมวดนั้น)")
-    if not github_config(st.secrets):
+    if not storage.config(st.secrets):
         st.info("💡 ตอนนี้บันทึกลงไฟล์ในเครื่องที่รันแอปเท่านั้น — ถ้าแอปอยู่บน Streamlit Cloud "
-                "ข้อมูลจะหายเมื่อแอปรีสตาร์ท จนกว่าจะตั้งค่า GitHub token (ดู README)")
+                "ข้อมูลจะหายเมื่อแอปรีสตาร์ท จนกว่าจะตั้งค่า Supabase หรือ GitHub ใน Secrets (ดู README)")
     data = stock.load()
     items = data["items"]
     ver = st.session_state.get("stock_ver", 0)
