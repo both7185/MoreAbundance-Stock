@@ -38,12 +38,14 @@ from monthly_report import (
 )
 from po_extractor import PurchaseOrder, parse_po
 from products import (
-    COL_ALIAS, COL_CAT, COL_COST, COL_NAME, COL_NO, COL_SUP, COL_SUPPLIER, COL_UNIT, COLUMNS,
+    COL_ALIAS, COL_CAT, COL_COST, COL_NAME, COL_NO, COL_PRICE, COL_SUP, COL_SUPPLIER, COL_UNIT, COLUMNS,
     add_alias, build_lookup, export_excel, github_config, import_excel, parse_cost, suggest_category,
     load_products, normalize_rows, set_letter_order, suggest, thai_sort_key, to_csv, validate,
     save_products_local,
 )
-from report_builder import aggregate, build_workbook, col_label, date_range_label, is_update, load_catalog, po_tag
+from report_builder import (
+    aggregate, build_workbook, col_label, date_range_label, is_update, latest_prices, load_catalog, po_tag, price_check,
+)
 from sup_codes import (
     code_meaning, export_sup_excel, group_label, import_sup_excel, letter_label, letter_order,
     load_sup, next_code, normalize_sup, save_sup_local, shop_map, to_json, validate_sup,
@@ -357,6 +359,74 @@ def daily_section() -> None:
         type="primary",
         key="daily_download",
     )
+
+    price_check_section(summary, products, sup)
+
+
+PRICE_STATUS = {"ok": "✅ ตรงกัน", "diff": "❌ ไม่ตรง", "no_price": "➖ ยังไม่มีราคาใน Data",
+                "not_found": "⚠️ ไม่อยู่ใน Data"}
+
+
+def price_check_section(summary, products: list[dict], sup: dict) -> None:
+    """
+    Step 4 (bottom of the page): ราคา/หน่วย of these POs vs ราคาต่อหน่วย in the product data.
+    Check only — the POs, the table above and the Excel are not changed.
+    """
+    checks = price_check(summary)
+    if not checks:
+        return
+    counts = {k: sum(c["status"] == k for c in checks) for k in PRICE_STATUS}
+    st.subheader("4. เทียบราคาต่อหน่วยกับข้อมูลสินค้า (Data)")
+    st.caption("ใช้ตรวจเท่านั้น — ไม่เปลี่ยนค่าในใบสั่งซื้อ ตารางสรุป หรือไฟล์ Excel • "
+               "ราคาใน Data แก้ได้ที่คอลัมน์ **ราคาต่อหน่วย** ในแท็บ 🗂️ ข้อมูลสินค้า")
+    m = st.columns(4)
+    for col, (k, label) in zip(m, PRICE_STATUS.items()):
+        col.metric(label, counts[k])
+    only_issues = st.toggle("แสดงเฉพาะรายการที่ไม่ตรง / ยังไม่มีราคา", value=counts["diff"] > 0, key="price_only_issues")
+    rank = {"diff": 0, "no_price": 1, "not_found": 2, "ok": 3}   # problems first, then the report order
+    shown = sorted((c for c in checks if not only_issues or c["status"] != "ok"), key=lambda c: rank[c["status"]])
+    if shown:
+        df = pd.DataFrame([{
+            "รายการสินค้า": c["row"].name,
+            "หน่วย": c["row"].unit,
+            "ราคาใน PO": money(c["row"].unit_price),
+            "ราคาใน Data": "" if c["row"].data_price is None else money(c["row"].data_price),
+            "ส่วนต่าง (PO − Data)": "" if c["diff"] is None else ("+" if c["diff"] > 0 else "") + money(c["diff"]),
+            "ผล": PRICE_STATUS[c["status"]],
+            "ใบสั่งซื้อ": ", ".join(col_label(x) for x in c["columns"]),
+        } for c in shown])
+        diff_css = "background-color: #ffd7d5"   # light red: price differs from the product data
+        st.dataframe(
+            df.style.apply(lambda row: [diff_css if row["ผล"] == PRICE_STATUS["diff"] else ""] * len(row), axis=1),
+            hide_index=True, width="stretch", height=min(36 * (len(df) + 1), 500),
+            column_config={c: st.column_config.TextColumn(alignment="right")
+                           for c in ("ราคาใน PO", "ราคาใน Data", "ส่วนต่าง (PO − Data)")},
+        )
+    else:
+        st.success("ราคาต่อหน่วยในใบสั่งซื้อชุดนี้ตรงกับข้อมูลสินค้าทุกรายการ")
+
+    # Optional: copy the latest PO prices into the product data (separate, explicit action)
+    by_name = {p[COL_NAME]: p for p in products}
+    latest = latest_prices(summary)
+    updates = {n: v for n, v in latest.items()
+               if n in by_name and parse_cost(by_name[n][COL_PRICE]) != v[0]}
+    with st.expander(f"💾 อัปเดตราคาต่อหน่วยใน Data ตามใบสั่งซื้อชุดนี้ ({len(updates)} รายการ)"):
+        st.caption("ใช้ราคาจากใบสั่งซื้อที่ **วันที่ล่าสุด** ของสินค้าแต่ละตัวในชุดนี้ • "
+                   "เฉพาะสินค้าที่มีอยู่ใน Data แล้ว • สินค้าที่ไม่อยู่ใน Data ไม่ถูกเพิ่ม")
+        if not updates:
+            st.write("ราคาใน Data ตรงกับราคาล่าสุดของใบสั่งซื้อชุดนี้แล้ว")
+            return
+        st.dataframe(pd.DataFrame([{
+            "รายการ": n, "ราคาใน Data ตอนนี้": by_name[n][COL_PRICE], "ราคาใหม่": money(price),
+            "จากใบสั่งซื้อ": col_label(col),
+        } for n, (price, col) in updates.items()]), hide_index=True, width="stretch")
+        if st.button(f"💾 บันทึกราคา {len(updates)} รายการลง Data", key="save_prices"):
+            rows = [dict(p) for p in products]
+            for row in rows:
+                if row[COL_NAME] in updates:
+                    row[COL_PRICE] = str(updates[row[COL_NAME]][0])
+            if persist_products(rows, f"PO app: อัปเดตราคาต่อหน่วย {len(updates)} รายการจากใบสั่งซื้อ", sup):
+                st.rerun()
 
 
 MISSING_CSS = "background-color: #fff3a0"   # yellow: still empty (same as the Excel)
@@ -743,7 +813,7 @@ def products_section() -> None:
     gh = github_config(st.secrets)
     codes = shop_map(sup)
 
-    st.caption("รายการสินค้าที่ใช้กำหนด **หมวดหมู่** **ลำดับการเรียง (Sup no.)** และ **ทุน** ในไฟล์ Excel รวมรายการสินค้า  \n"
+    st.caption("รายการสินค้าที่ใช้กำหนด **หมวดหมู่** **ลำดับการเรียง (Sup no.)** และ **ทุน** ในไฟล์ Excel รวมรายการสินค้า • **ราคาต่อหน่วย** ใช้เทียบราคาในใบสั่งซื้อ  \n"
                "เพิ่มแถว: ปุ่ม **+** มุมขวาบนของตาราง • ลบแถว: ติ๊กช่องหน้าแถวแล้วกดไอคอนถังขยะ • "
                "ค้นหา: ไอคอนแว่นขยาย • แก้เสร็จแล้วกด 💾 บันทึก  \n"
                "**Sup no. ตามร้านหลักอัตโนมัติ** — เปลี่ยนรหัสหรือเพิ่มร้านใหม่ที่แท็บ 🏷️ รหัส Sup")
@@ -768,6 +838,7 @@ def products_section() -> None:
 
     df = pd.DataFrame(view, columns=COLUMNS) if view else pd.DataFrame(columns=COLUMNS)
     df[COL_NO] = pd.to_numeric(df[COL_NO], errors="coerce")
+    df[COL_PRICE] = pd.to_numeric(df[COL_PRICE].str.replace(",", ""), errors="coerce")
     df[COL_COST] = pd.to_numeric(df[COL_COST].str.replace(",", ""), errors="coerce")
     shop_options = list(dict.fromkeys([s["name"] for s in sup["shops"]] +
                                       [p[COL_SUPPLIER] for p in products if p[COL_SUPPLIER]]))
@@ -783,6 +854,8 @@ def products_section() -> None:
             COL_NO: st.column_config.NumberColumn(width="small", help="ลำดับในรายการ (สินค้าใหม่ต่อท้าย)"),
             COL_CAT: st.column_config.TextColumn(help="เช่น " + ", ".join(cats[:6])),
             COL_NAME: st.column_config.TextColumn(required=True, help="ชื่อสินค้าตามใบ PO"),
+            COL_PRICE: st.column_config.NumberColumn(min_value=0, format="localized",
+                                                     help="ราคาต่อหน่วยตามใบ PO — ใช้เทียบราคาในหน้าสรุปใบสั่งซื้อ (ว่าง = ยังไม่มี)"),
             COL_COST: st.column_config.NumberColumn(min_value=0, format="localized",
                                                     help="ทุนต่อหน่วย — ใช้คำนวณ ทุนรวม / กำไร ในไฟล์ Excel (ว่าง = ยังไม่รู้)"),
             COL_SUPPLIER: st.column_config.SelectboxColumn(
