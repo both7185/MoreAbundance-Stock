@@ -89,7 +89,36 @@ A separate page (sidebar), not linked to the PO features. Data: `stock.json`.
   (marked ลบแล้ว), and its code is not reused while they are there.
 * Codes: ของสด M · ของแปรรูป P · ผัก V · ผลไม้ F · เครื่องปรุง I · ของแห้ง D · เครื่องดื่ม B · ของหวาน S · อื่นๆ X (e.g. `I-001`).
 
-### Where the website keeps its data (GitHub `data` branch)
+### Where the website keeps its data (Supabase, GitHub `data` branch as backup)
+
+The disk on Streamlit Cloud is temporary, so the editable data (`products.csv`, `sup_codes.json`, `stock.json`)
+is kept somewhere else (see `storage.py`):
+
+| secrets | data kept in |
+|---|---|
+| `[supabase]` (+ `[github]`) | Supabase table `app_files`, one row per file. While `[github]` is set, every save is also copied to the `data` branch as a backup. |
+| only `[github]` | the GitHub `data` branch (below) |
+| none (`run.bat`) | the files in the folder |
+
+Moving to Supabase (once):
+
+1. Supabase dashboard → **SQL Editor** → New query → paste all of `supabase/schema.sql` → **Run**.
+2. Streamlit app → **⋮ → Settings → Secrets**, add (keep the `[github]` block for now):
+   ```toml
+   [supabase]
+   url = "https://xxxx.supabase.co"     # Project URL, without /rest/v1/
+   key = "sb_secret_xxxxxxxx"           # Project Settings → API Keys → secret key (not the publishable key)
+   ```
+3. Open the app. Files Supabase does not have yet are copied once from the `data` branch (read only).
+   Sidebar → **🗄️ ที่เก็บข้อมูล** → 🔍 เทียบข้อมูล shows whether Supabase and GitHub hold the same data.
+4. When you are happy, remove the `[github]` block (or set `github_backup = false` under `[supabase]`)
+   to stop the backup copy. The `data` branch stays on GitHub as it was.
+
+If `[supabase]` is set but `schema.sql` has not been run, or the key is not the secret key, the app keeps
+using GitHub only and says why at the top of the page. Every Supabase save keeps the previous version
+in `app_file_history` (last 300 per file).
+
+### GitHub `data` branch
 
 The disk on Streamlit Cloud is temporary, and it is reset to the files on `main` at every deploy.
 So the app keeps the editable data in a **separate branch, `data`**:
@@ -140,6 +169,8 @@ When running locally (`run.bat`) without secrets, the files in the folder are th
 | `po_extractor.py` | PDF → `PurchaseOrder` (PO no., วันที่, ใช้ในวันที่, items, printed total) |
 | `report_builder.py` | Group by (name, unit, price), split qty by date, build the styled workbook |
 | `catalog.json` | Name/unit aliases (e.g. ปี๊บ → ปิ๊บ) |
+| `storage.py` | Where the data files are saved: Supabase (with GitHub backup), GitHub only, or local |
+| `supabase_store.py` / `supabase/schema.sql` | Supabase table `app_files` access / the SQL that creates it |
 | `datastore.py` | Sync of the data files with the GitHub `data` branch |
 | `products.py` | Product list logic: matching, Sup no. sort, Excel import/export, GitHub save |
 | `products.csv` | **Product list (Data)**: หมวดหมู่, รายการ, หน่วยนับ, ทุน, ร้านหลัก, Sup no., ชื่อใน PO. Edited in the 🗂️ tab |
