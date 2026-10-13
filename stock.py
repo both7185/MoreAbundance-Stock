@@ -13,20 +13,28 @@ Everything is one JSON file, stock.json, saved to the GitHub *data* branch like 
       "movements": [
         {"id": "...", "code": "I-001", "date": "2026-10-10", "in": 12, "out": 0,
          "before": 20, "count": 20, "after": 32, "exp": "2027-05-01", "saved_at": "2026-10-10 16:30"},
-        {..., "out": 5, "out_lots": [{"exp": "2027-03-26", "qty": 5}]}    # which lots the 5 came from
+        {..., "out": 5, "out_lots": [{"exp": "2027-03-26", "qty": 5}], "note": "ใบเบิก ส่ง 14/10/2026 ..."}
+      ],
+      "withdrawals": [                                  # ใบเบิก: one per delivery date + place
+        {"date": "2026-10-14", "place": "โรงเรียนนายร้อย จปร", "saved_at": "2026-10-13 16:30",
+         "lines": [{"code": "I-001", "name": "...", "unit": "กล.", "exp": "2027-03-26", "qty": 5,
+                    "taken": [{"exp": "2027-03-26", "qty": 5}]}]}
       ]
     }
 
 * code   = category letter + running number (M-001). Moving an item to another category gives it
            the next number of that category (highest number in use + 1).
 * lots   = how much of the stock has which expiry date. Stock without a known date is not in a lot,
-           so sum(lots) <= qty. Taking stock out uses the lot the user picked (default: the earliest
-           expiry), then the next-earliest lots, then the stock without a date.
+           so sum(lots) <= qty.
+* withdrawals = ใบเบิก (stock out). Each line takes from the lot the user picked (default: the earliest
+           expiry). The stock is cut when the sheet is saved; saving it again puts back what the old
+           version took and takes the new lines, so an edit changes the stock only by the difference.
 * movements are kept for HISTORY_DAYS days (by the record date). Deleting an item keeps its movements
            (with the item's name and unit added) so the history still shows what it was.
 """
 from __future__ import annotations
 
+import copy
 import json
 import uuid
 from datetime import date, datetime, timedelta
@@ -89,13 +97,16 @@ def fmt_date(iso: str) -> str:
 # Load / save
 # --------------------------------------------------------------------------- #
 def empty() -> dict:
-    return {"items": [], "movements": []}
+    return {"items": [], "movements": [], "withdrawals": []}
 
 
 def parse(text: str | bytes) -> dict:
     data = json.loads(text) if text else empty()
     data.setdefault("items", [])
     data.setdefault("movements", [])
+    data.setdefault("withdrawals", [])
+    for w in data["withdrawals"]:
+        w.setdefault("place", "")
     for it in data["items"]:
         it.setdefault("unit", "")
         it["qty"] = num(it.get("qty", 0))
@@ -146,6 +157,8 @@ def next_code(data: dict, category: str) -> str:
     letter = CATEGORIES.get(category, "X")
     used = [code_number(it["code"]) for it in data["items"] if it["code"].startswith(letter + "-")]
     used += [code_number(m["code"]) for m in data["movements"] if m["code"].startswith(letter + "-")]
+    used += [code_number(l["code"]) for w in data["withdrawals"] for l in w["lines"]
+             if l["code"].startswith(letter + "-")]
     return f"{letter}-{max(used, default=0) + 1:03d}"
 
 
@@ -238,12 +251,13 @@ def plan_out(item: dict, count, qty_out, lot: str | None = None) -> list[dict]:
 def prune(data: dict, ref: date | None = None) -> None:
     cutoff = ((ref or today()) - timedelta(days=HISTORY_DAYS)).isoformat()
     data["movements"] = [m for m in data["movements"] if m["date"] >= cutoff]
+    data["withdrawals"] = [w for w in data["withdrawals"] if w["date"] >= cutoff]
 
 
 def record(data: dict, code: str, qty_in, qty_out, count, exp: date | None, on: date,
            lot: str | None = None) -> str:
     """
-    One stock entry (ปุ่ม เข้า-ออกสินค้า):
+    One stock entry (ปุ่ม สินค้าเข้า — the page no longer takes stock out here, see save_withdrawal):
       count = stock before this entry: None = the current stock, another number = re-count
       after = count + in - out
       exp   = expiry of what came in; with nothing coming in it dates the stock that has no date yet
@@ -262,7 +276,7 @@ def record(data: dict, code: str, qty_in, qty_out, count, exp: date | None, on: 
     if after < 0:
         return f"เอาออกได้ไม่เกิน {fmt_num(count + qty_in)} {item['unit']}".strip()
     if qty_in == 0 and qty_out == 0 and count == item["qty"] and exp is None:
-        return "ยังไม่ได้กรอกจำนวนเข้า / ออก หรือแก้ยอดในสต็อก"
+        return "ยังไม่ได้กรอกจำนวนเข้า หรือแก้ยอดในสต็อก"
     if on < today() - timedelta(days=HISTORY_DAYS):
         return f"วันที่บันทึกย้อนหลังได้ไม่เกิน {HISTORY_DAYS} วัน"
 
@@ -282,6 +296,135 @@ def record(data: dict, code: str, qty_in, qty_out, count, exp: date | None, on: 
         "exp": exp.isoformat() if exp else "", "saved_at": now_text(),
         **({"out_lots": out_lots} if out_lots else {}),
     })
+    prune(data)
+    return ""
+
+
+# --------------------------------------------------------------------------- #
+# ใบเบิก (ปุ่ม เบิกสินค้าออก): one sheet per delivery date + place, each line = item + lot + qty
+# --------------------------------------------------------------------------- #
+PLACES = ("โรงเรียนนายร้อย จปร", "โรงพยาบาลนายร้อย จปร", "พลทหารโรงพยาบาล")
+NO_PLACE = "ไม่ระบุสถานที่"     # sheets saved before places existed (place "")
+
+
+def place_label(place: str) -> str:
+    return place or NO_PLACE
+
+
+def sheet(data: dict, on: str, place: str = "") -> dict | None:
+    """The ใบเบิก of one delivery date ('2026-10-14') and place, or None."""
+    return next((w for w in data["withdrawals"] if w["date"] == on and w.get("place", "") == place), None)
+
+
+def _restore(item: dict, taken: list[dict]) -> None:
+    """Put stock that a ใบเบิก took back into its lots."""
+    for t in taken:
+        item["qty"] = num(item["qty"] + t["qty"])
+        if t["exp"]:
+            _add_lot(item, t["exp"], t["qty"])
+
+
+def lots_for_sheet(data: dict, on: str, code: str, place: str = "") -> dict[str, float]:
+    """Stock of one item per lot ('' = no expiry date) as if the saved ใบเบิก of `on` + `place` was not saved —
+    what that sheet can take when it is saved again."""
+    item = find(data, code)
+    if item is None:
+        return {}
+    copy = {**item, "lots": [dict(l) for l in item["lots"]]}
+    for line in (sheet(data, on, place) or {"lines": []})["lines"]:
+        if line["code"] == code:
+            _restore(copy, line["taken"])
+    return {t["exp"]: t["qty"] for t in plan_out(copy, copy["qty"], copy["qty"])}
+
+
+def _taken_by_code(lines: list[dict]) -> dict[str, dict[str, float]]:
+    out: dict[str, dict[str, float]] = {}
+    for line in lines:
+        per = out.setdefault(line["code"], {})
+        for t in line["taken"]:
+            per[t["exp"]] = num(per.get(t["exp"], 0) + t["qty"])
+    return out
+
+
+def save_withdrawal(data: dict, on: date, lines: list[dict], place: str = "") -> str:
+    """
+    Save the ใบเบิก of delivery date `on` for `place` (one of PLACES; "" only for an old sheet without one): lines = [{"code": "I-001", "exp": "2027-03-26", "qty": 5}, ...]
+    (exp "" = stock without an expiry date). What the saved version of this sheet took is put back first,
+    then the new lines are taken out, so editing a sheet changes the stock only by the difference.
+    No lines = the sheet is deleted (its stock goes back). On an error `data` is left as it was.
+    """
+    if on < today() - timedelta(days=HISTORY_DAYS):
+        return f"แก้ใบเบิกย้อนหลังได้ไม่เกิน {HISTORY_DAYS} วัน"
+    if place not in PLACES and not (place == "" and sheet(data, on.isoformat(), "")):
+        return "เลือกสถานที่ส่งของ"
+    work = copy.deepcopy(data)
+    err = _save_withdrawal(work, on, lines, place)
+    if not err:
+        data.clear()
+        data.update(work)
+    return err
+
+
+def _save_withdrawal(data: dict, on: date, lines: list[dict], place: str) -> str:
+    key = on.isoformat()
+    old = sheet(data, key, place)
+    old_lines = old["lines"] if old else []
+    merged: dict[tuple[str, str], float] = {}
+    for line in lines:
+        qty = num(line["qty"])
+        if qty < 0:
+            return "จำนวนต้องไม่ติดลบ"
+        if qty:
+            k = (line["code"], line["exp"])
+            merged[k] = num(merged.get(k, 0) + qty)
+
+    codes = list(dict.fromkeys([l["code"] for l in old_lines] + [c for c, _ in merged]))
+    before = {c: find(data, c)["qty"] for c in codes if find(data, c)}
+    for line in old_lines:
+        item = find(data, line["code"])
+        if item:                                  # a deleted item cannot get its stock back
+            _restore(item, line["taken"])
+    new_lines = []
+    for (code, exp), qty in merged.items():
+        item = find(data, code)
+        if item is None:
+            return f"ไม่พบสินค้ารหัส {code}"
+        have = {t["exp"]: t["qty"] for t in plan_out(item, item["qty"], item["qty"])}.get(exp, 0)
+        if qty > have:
+            where = f"ล็อตหมดอายุ {fmt_date(exp)}" if exp else "ส่วนที่ไม่รู้วันหมดอายุ"
+            return (f"{item['name']}: {where} มีแค่ {fmt_num(have)} {item['unit']} "
+                    f"(จะเบิก {fmt_num(qty)})").replace("  ", " ")
+        taken = _take_out(item, qty, exp)
+        item["qty"] = num(item["qty"] - qty)
+        new_lines.append({"code": code, "name": item["name"], "unit": item["unit"], "exp": exp, "qty": qty,
+                          "taken": taken})
+
+    # history: one movement per item whose withdrawal changed
+    old_taken, new_taken = _taken_by_code(old_lines), _taken_by_code(new_lines)
+    note = f"{'แก้' if old else ''}ใบเบิก ส่ง {fmt_date(key)} {place_label(place)}"
+    for code in codes:
+        item = find(data, code)
+        a, b = old_taken.get(code, {}), new_taken.get(code, {})
+        if item is None or a == b:
+            continue
+        delta = {e: num(b.get(e, 0) - a.get(e, 0)) for e in sorted(set(a) | set(b))}
+        diff = num(item["qty"] - before[code])
+        data["movements"].append({
+            "id": uuid.uuid4().hex[:12], "code": code, "date": key,
+            "in": max(diff, 0), "out": max(-diff, 0), "before": before[code], "count": before[code],
+            "after": item["qty"], "exp": "", "saved_at": now_text(), "note": note,
+            **({"out_lots": [{"exp": e, "qty": d} for e, d in delta.items() if d > 0]}
+               if any(d > 0 for d in delta.values()) else {}),
+            **({"back_lots": [{"exp": e, "qty": -d} for e, d in delta.items() if d < 0]}
+               if any(d < 0 for d in delta.values()) else {}),
+        })
+
+    if old:
+        data["withdrawals"].remove(old)
+    if new_lines:
+        data["withdrawals"].append({"date": key, "place": place, "lines": new_lines, "saved_at": now_text()})
+        order = {p: i for i, p in enumerate(PLACES)}
+        data["withdrawals"].sort(key=lambda w: (w["date"], order.get(w.get("place", ""), -1)))
     prune(data)
     return ""
 
@@ -327,6 +470,10 @@ def update_item(data: dict, code: str, name: str, category: str, unit: str, min_
         for m in data["movements"]:
             if m["code"] == code:
                 m["code"] = new_code
+        for w in data["withdrawals"]:
+            for line in w["lines"]:
+                if line["code"] == code:
+                    line["code"] = new_code
     item.update(name=name, category=category, unit=unit, min=min_level, code=new_code)
     data["items"].sort(key=sort_key)
     return "", new_code

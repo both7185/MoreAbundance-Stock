@@ -21,7 +21,16 @@ rem A .venv copied from another PC does not work - rebuild it if broken.
 set "VPY=%~dp0.venv\Scripts\python.exe"
 if not exist "%VPY%" goto :makevenv
 "%VPY%" -c "import streamlit, pymupdf, fontTools, openpyxl, pandas" >nul 2>&1
+if errorlevel 1 goto :rebuild
+rem the app needs Streamlit 1.65+ - update the packages in place when the .venv is older
+"%VPY%" -c "import sys, streamlit; sys.exit(0 if tuple(int(x) for x in streamlit.__version__.split('.')[:2]) >= (1, 65) else 1)" >nul 2>&1
 if not errorlevel 1 goto :run
+echo [..] Updating packages - please wait...
+"%VPY%" -m pip install --upgrade -r requirements.txt
+if errorlevel 1 goto :fail
+goto :run
+
+:rebuild
 echo [!] Existing .venv is broken or incomplete - rebuilding it...
 rmdir /s /q ".venv"
 
