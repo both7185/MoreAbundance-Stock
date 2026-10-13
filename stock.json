@@ -160,7 +160,7 @@
    "name": "เกลือ",
    "category": "เครื่องปรุง",
    "unit": "กก.",
-   "qty": 61,
+   "qty": 60,
    "min": 0,
    "lots": []
   },
@@ -2678,6 +2678,24 @@
    "before": 2,
    "count": 2,
    "after": 1,
+   "exp": "",
+   "saved_at": "2026-10-13 17:40",
+   "out_lots": [
+    {
+     "exp": "",
+     "qty": 1
+    }
+   ]
+  },
+  {
+   "id": "c61d2c2c1aff",
+   "code": "I-004",
+   "date": "2026-10-13",
+   "in": 0,
+   "out": 1,
+   "before": 61,
+   "count": 61,
+   "after": 60,
    "exp": "",
    "saved_at": "2026-10-13 17:40",
    "out_lots": [
