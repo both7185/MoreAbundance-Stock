@@ -84,6 +84,8 @@ A separate page (sidebar), not linked to the PO features. Data: `stock.json`.
   can be on several lines with different lots. Change จำนวน or delete lines in the table. The stock is cut when
   💾 บันทึกใบเบิก is pressed; saving an edited ใบเบิก changes the stock only by the difference, and 🗑️ ลบใบเบิกนี้ puts
   everything back into its lots. The history shows each change with หมายเหตุ "ใบเบิก ส่ง dd/mm/yyyy".
+  📥 Download Excel (next to 💾 บันทึกใบเบิก) gives the saved ใบเบิก of that day as a file: ลำดับ, รหัส, สินค้า, หมวด,
+  วันหมดอายุ (ล็อต), จำนวนเบิก, หน่วย, หมายเหตุ (blank, for notes), with signature lines; set to print on one A4 page width.
 * **วันหมดอายุ** lists every lot still in stock with its quantity, one per line (up to 3, then "…อีก N ล็อต").
   Click the cell to edit the dates / quantities, add or delete lots.
 * **ประวัติ**: click 📜 ดูประวัติ at the end of a row to open that item's movements in a pop-up (closed with ✕).

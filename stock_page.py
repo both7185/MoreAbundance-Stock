@@ -8,11 +8,13 @@
 * 📤 เบิกสินค้าออก: pick the delivery date (one ใบเบิก per date, like a folder — open it again to edit), then
   add items to its list: item + expiry lot (the earliest expiry is picked first) + จำนวน. The stock is cut
   when the ใบเบิก is saved; editing it later changes the stock by the difference (stock.save_withdrawal).
+  📥 Download Excel next to 💾 บันทึกใบเบิก gives the saved ใบเบิก of that day as a file (sheet_excel).
 * 🆕 เพิ่มสินค้าใหม่: name, รหัส, หมวด only — quantities come from สินค้าเข้า.
 * 🗑️ ลบสินค้า: search an item, tick to confirm, delete (its old movements stay in ประวัติทั้งหมด).
 """
 from __future__ import annotations
 
+import io
 from datetime import date, timedelta
 
 import pandas as pd
@@ -249,6 +251,64 @@ def _same(a: list[dict], b: list[dict]) -> bool:
            [(l["code"], l["exp"], stock.num(l["qty"])) for l in b]
 
 
+def sheet_excel(data: dict, on: str) -> bytes:
+    """The saved ใบเบิก of one delivery date as an .xlsx file (A4, fits the page width when printed)."""
+    from openpyxl import Workbook
+    from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
+
+    w = stock.sheet(data, on)
+    items = {it["code"]: it for it in data["items"]}
+    thin = Side(style="thin")
+    box = Border(left=thin, right=thin, top=thin, bottom=thin)
+    head_fill = PatternFill("solid", fgColor="2F5597")
+    stripe = PatternFill("solid", fgColor="DDEBF7")
+    center = Alignment(horizontal="center", vertical="center")
+    cols = [("ลำดับ", 7), ("รหัส", 9), ("สินค้า", 34), ("หมวด", 13), ("วันหมดอายุ (ล็อต)", 18),
+            ("จำนวนเบิก", 12), ("หน่วย", 9), ("หมายเหตุ", 22)]
+
+    wb = Workbook()
+    ws = wb.active
+    ws.title = f"ใบเบิก {date.fromisoformat(on):%d-%m-%Y}"
+    ws["A1"] = "ใบเบิกสินค้า"
+    ws["A1"].font = Font(size=16, bold=True)
+    ws["A2"] = f"วันที่ส่งของ: {day_label(on)}"
+    ws["A2"].font = Font(size=12, bold=True)
+    ws["A3"] = f"บันทึกล่าสุด: {w['saved_at']}  •  {len(w['lines'])} รายการ"
+    ws["A3"].font = Font(size=10, color="666666")
+    top = 5
+    for c, (title, width) in enumerate(cols, 1):
+        cell = ws.cell(top, c, title)
+        cell.font, cell.fill, cell.alignment, cell.border = Font(bold=True, color="FFFFFF"), head_fill, center, box
+        ws.column_dimensions[cell.column_letter].width = width
+    for i, line in enumerate(w["lines"], 1):
+        it = items.get(line["code"])
+        row = [i, line["code"], it["name"] if it else f"{line['name']} (ลบแล้ว)",
+               it["category"] if it else "", lot_label(line["exp"]), line["qty"],
+               it["unit"] if it else line.get("unit", ""), ""]
+        r = top + i
+        for c, v in enumerate(row, 1):
+            cell = ws.cell(r, c, v)
+            cell.border = box
+            if i % 2 == 0:
+                cell.fill = stripe
+            if c in (1, 2, 5, 7):
+                cell.alignment = center
+    last = top + len(w["lines"])
+    ws.cell(last + 1, 5, "รวม").font = Font(bold=True)
+    ws.cell(last + 1, 5).alignment = Alignment(horizontal="right")
+    ws.cell(last + 1, 6, f"{len(w['lines'])} รายการ").font = Font(bold=True)
+    ws.cell(last + 3, 2, "ผู้เบิก ..................................")
+    ws.cell(last + 3, 5, "ผู้จ่าย ..................................")
+    ws.freeze_panes = ws.cell(top + 1, 1)
+    ws.print_title_rows = f"{top}:{top}"
+    ws.page_setup.paperSize = ws.PAPERSIZE_A4
+    ws.page_setup.fitToWidth, ws.page_setup.fitToHeight = 1, 0
+    ws.sheet_properties.pageSetUpPr.fitToPage = True
+    buf = io.BytesIO()
+    wb.save(buf)
+    return buf.getvalue()
+
+
 def sheet_editor(data: dict, on: str) -> None:
     """Step 2: the list of one ใบเบิก — add item + lot + จำนวน, edit / delete lines, save (cuts the stock)."""
     saved = stock.sheet(data, on)
@@ -362,7 +422,7 @@ def sheet_editor(data: dict, on: str) -> None:
         st.error(err)
 
     changed = not _same(lines, saved_lines)
-    s1, s2, s3 = st.columns([1.3, 1.3, 2], vertical_alignment="center")
+    s1, s_xl, s2, s3 = st.columns([1.3, 1.4, 1.3, 1.6], vertical_alignment="center")
     if s1.button("💾 บันทึกใบเบิก", type="primary", key=f"wd_save_{ver}", width="stretch",
                  disabled=not changed or bool(errors) or (not lines and not saved)):
         total = sum(1 for l in lines if l["qty"] > 0)
@@ -372,14 +432,20 @@ def sheet_editor(data: dict, on: str) -> None:
                                     wd_open=on if total else None)
             _new_list_version()
             st.rerun()                   # whole page: the stock table behind shows the new numbers
+    s_xl.download_button(
+        "📥 Download Excel", sheet_excel(data, on) if saved else b"", key=f"wd_xlsx_{ver}", width="stretch",
+        file_name=f"ใบเบิก_{on}.xlsx", on_click="ignore", disabled=not saved,
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        help=("ไฟล์นี้เป็นใบเบิกที่บันทึกล่าสุด — กด 💾 บันทึกใบเบิก ก่อน ถ้าอยากได้รายการที่เพิ่งแก้"
+              if changed else "รายการที่เบิกในวันนี้เป็นไฟล์ Excel") if saved else "บันทึกใบเบิกก่อนจึงดาวน์โหลดได้")
     if changed:
-        if s2.button("↩️ ยกเลิกการแก้ไข", key=f"wd_reset_{ver}", width="stretch"):
+        if s2.button("↩️ ยกเลิกแก้ไข", key=f"wd_reset_{ver}", width="stretch"):
             st.session_state["wd_draft"] = None
             _new_list_version()
             st.rerun(scope="fragment")
-        s3.caption("⚠️ มีการแก้ไขที่ยังไม่ได้บันทึก — สต็อกยังไม่ถูกตัด")
+        st.caption("⚠️ มีการแก้ไขที่ยังไม่ได้บันทึก — สต็อกยังไม่ถูกตัด (Excel ยังเป็นใบเบิกที่บันทึกล่าสุด)")
     elif saved:
-        with s3.popover("🗑️ ลบใบเบิกนี้", width="stretch"):
+        with s2.popover("🗑️ ลบใบเบิกนี้", width="stretch"):
             st.caption("ลบแล้วสินค้าในใบเบิกนี้จะกลับเข้าสต็อก (เข้าล็อตเดิม)")
             if st.button("ยืนยันลบใบเบิก", type="primary", key=f"wd_del_{ver}"):
                 if save(lambda d: stock.save_withdrawal(d, date.fromisoformat(on), []),
