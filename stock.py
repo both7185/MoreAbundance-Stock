@@ -13,10 +13,10 @@ Everything is one JSON file, stock.json, saved to the GitHub *data* branch like 
       "movements": [
         {"id": "...", "code": "I-001", "date": "2026-10-10", "in": 12, "out": 0,
          "before": 20, "count": 20, "after": 32, "exp": "2027-05-01", "saved_at": "2026-10-10 16:30"},
-        {..., "out": 5, "out_lots": [{"exp": "2027-03-26", "qty": 5}], "note": "ใบเบิก ส่ง 14/10/2026"}
+        {..., "out": 5, "out_lots": [{"exp": "2027-03-26", "qty": 5}], "note": "ใบเบิก ส่ง 14/10/2026 ..."}
       ],
-      "withdrawals": [                                  # ใบเบิก: one per delivery date
-        {"date": "2026-10-14", "saved_at": "2026-10-13 16:30",
+      "withdrawals": [                                  # ใบเบิก: one per delivery date + place
+        {"date": "2026-10-14", "place": "โรงเรียนนายร้อย จปร", "saved_at": "2026-10-13 16:30",
          "lines": [{"code": "I-001", "name": "...", "unit": "กล.", "exp": "2027-03-26", "qty": 5,
                     "taken": [{"exp": "2027-03-26", "qty": 5}]}]}
       ]
@@ -105,6 +105,8 @@ def parse(text: str | bytes) -> dict:
     data.setdefault("items", [])
     data.setdefault("movements", [])
     data.setdefault("withdrawals", [])
+    for w in data["withdrawals"]:
+        w.setdefault("place", "")
     for it in data["items"]:
         it.setdefault("unit", "")
         it["qty"] = num(it.get("qty", 0))
@@ -299,11 +301,19 @@ def record(data: dict, code: str, qty_in, qty_out, count, exp: date | None, on: 
 
 
 # --------------------------------------------------------------------------- #
-# ใบเบิก (ปุ่ม เบิกสินค้าออก): one sheet per delivery date, each line = item + lot + qty
+# ใบเบิก (ปุ่ม เบิกสินค้าออก): one sheet per delivery date + place, each line = item + lot + qty
 # --------------------------------------------------------------------------- #
-def sheet(data: dict, on: str) -> dict | None:
-    """The ใบเบิก of one delivery date ('2026-10-14'), or None."""
-    return next((w for w in data["withdrawals"] if w["date"] == on), None)
+PLACES = ("โรงเรียนนายร้อย จปร", "โรงพยาบาลนายร้อย จปร", "พลทหารโรงพยาบาล")
+NO_PLACE = "ไม่ระบุสถานที่"     # sheets saved before places existed (place "")
+
+
+def place_label(place: str) -> str:
+    return place or NO_PLACE
+
+
+def sheet(data: dict, on: str, place: str = "") -> dict | None:
+    """The ใบเบิก of one delivery date ('2026-10-14') and place, or None."""
+    return next((w for w in data["withdrawals"] if w["date"] == on and w.get("place", "") == place), None)
 
 
 def _restore(item: dict, taken: list[dict]) -> None:
@@ -314,14 +324,14 @@ def _restore(item: dict, taken: list[dict]) -> None:
             _add_lot(item, t["exp"], t["qty"])
 
 
-def lots_for_sheet(data: dict, on: str, code: str) -> dict[str, float]:
-    """Stock of one item per lot ('' = no expiry date) as if the saved ใบเบิก of `on` was not saved —
+def lots_for_sheet(data: dict, on: str, code: str, place: str = "") -> dict[str, float]:
+    """Stock of one item per lot ('' = no expiry date) as if the saved ใบเบิก of `on` + `place` was not saved —
     what that sheet can take when it is saved again."""
     item = find(data, code)
     if item is None:
         return {}
     copy = {**item, "lots": [dict(l) for l in item["lots"]]}
-    for line in (sheet(data, on) or {"lines": []})["lines"]:
+    for line in (sheet(data, on, place) or {"lines": []})["lines"]:
         if line["code"] == code:
             _restore(copy, line["taken"])
     return {t["exp"]: t["qty"] for t in plan_out(copy, copy["qty"], copy["qty"])}
@@ -336,26 +346,28 @@ def _taken_by_code(lines: list[dict]) -> dict[str, dict[str, float]]:
     return out
 
 
-def save_withdrawal(data: dict, on: date, lines: list[dict]) -> str:
+def save_withdrawal(data: dict, on: date, lines: list[dict], place: str = "") -> str:
     """
-    Save the ใบเบิก of delivery date `on`: lines = [{"code": "I-001", "exp": "2027-03-26", "qty": 5}, ...]
+    Save the ใบเบิก of delivery date `on` for `place` (one of PLACES; "" only for an old sheet without one): lines = [{"code": "I-001", "exp": "2027-03-26", "qty": 5}, ...]
     (exp "" = stock without an expiry date). What the saved version of this sheet took is put back first,
     then the new lines are taken out, so editing a sheet changes the stock only by the difference.
     No lines = the sheet is deleted (its stock goes back). On an error `data` is left as it was.
     """
     if on < today() - timedelta(days=HISTORY_DAYS):
         return f"แก้ใบเบิกย้อนหลังได้ไม่เกิน {HISTORY_DAYS} วัน"
+    if place not in PLACES and not (place == "" and sheet(data, on.isoformat(), "")):
+        return "เลือกสถานที่ส่งของ"
     work = copy.deepcopy(data)
-    err = _save_withdrawal(work, on, lines)
+    err = _save_withdrawal(work, on, lines, place)
     if not err:
         data.clear()
         data.update(work)
     return err
 
 
-def _save_withdrawal(data: dict, on: date, lines: list[dict]) -> str:
+def _save_withdrawal(data: dict, on: date, lines: list[dict], place: str) -> str:
     key = on.isoformat()
-    old = sheet(data, key)
+    old = sheet(data, key, place)
     old_lines = old["lines"] if old else []
     merged: dict[tuple[str, str], float] = {}
     for line in lines:
@@ -389,7 +401,7 @@ def _save_withdrawal(data: dict, on: date, lines: list[dict]) -> str:
 
     # history: one movement per item whose withdrawal changed
     old_taken, new_taken = _taken_by_code(old_lines), _taken_by_code(new_lines)
-    note = f"{'แก้' if old else ''}ใบเบิก ส่ง {fmt_date(key)}"
+    note = f"{'แก้' if old else ''}ใบเบิก ส่ง {fmt_date(key)} {place_label(place)}"
     for code in codes:
         item = find(data, code)
         a, b = old_taken.get(code, {}), new_taken.get(code, {})
@@ -410,8 +422,9 @@ def _save_withdrawal(data: dict, on: date, lines: list[dict]) -> str:
     if old:
         data["withdrawals"].remove(old)
     if new_lines:
-        data["withdrawals"].append({"date": key, "lines": new_lines, "saved_at": now_text()})
-        data["withdrawals"].sort(key=lambda w: w["date"])
+        data["withdrawals"].append({"date": key, "place": place, "lines": new_lines, "saved_at": now_text()})
+        order = {p: i for i, p in enumerate(PLACES)}
+        data["withdrawals"].sort(key=lambda w: (w["date"], order.get(w.get("place", ""), -1)))
     prune(data)
     return ""
 

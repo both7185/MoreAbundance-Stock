@@ -5,7 +5,8 @@
   วันหมดอายุ cell to edit its expiry lots (one lot per line). ✏️ แก้ไขตาราง switches the table to editing name / หมวด / หน่วย / ขั้นต่ำ (💾 บันทึก).
 * 📜 ประวัติทั้งหมด: every item's movements in one pop-up.
 * ➕ สินค้าเข้า: search an item, then เข้า / จำนวนในสต็อก / วันหมดอายุ / วันที่บันทึก → ยอดใหม่.
-* 📤 เบิกสินค้าออก: pick the delivery date (one ใบเบิก per date, like a folder — open it again to edit), then
+* 📤 เบิกสินค้าออก: pick the delivery date and place (one ใบเบิก per date + place, like a folder — open it
+  again to edit), then
   add items to its list: item + expiry lot (the earliest expiry is picked first) + จำนวน. The stock is cut
   when the ใบเบิก is saved; editing it later changes the stock by the difference (stock.save_withdrawal).
   📥 Download Excel next to 💾 บันทึกใบเบิก gives the saved ใบเบิก of that day as a file (sheet_excel).
@@ -188,33 +189,36 @@ def _new_list_version() -> None:
 @st.dialog("📤 เบิกสินค้าออก", width="large", on_dismiss=_close_withdraw)
 def withdraw_dialog() -> None:
     data = stock.load()          # read every time: the dialog stays open after 💾 บันทึกใบเบิก
-    on = st.session_state.get("wd_open")
-    if on is None:
+    opened = st.session_state.get("wd_open")       # (delivery date, place) or None
+    if opened is None:
         sheet_list(data)
     else:
-        sheet_editor(data, on)
+        sheet_editor(data, *opened)
 
 
-def _open_sheet(on: str | None) -> None:
-    st.session_state.update(wd_open=on, wd_draft=None)
+def _open_sheet(on: str | None, place: str = "") -> None:
+    st.session_state.update(wd_open=(on, place) if on else None, wd_draft=None)
     _new_list_version()
     st.rerun(scope="fragment")
 
 
 def sheet_list(data: dict) -> None:
-    """Step 1: pick the delivery date — a new ใบเบิก, or open one made before (like a folder)."""
-    st.caption("1 วันที่ส่งของ = 1 ใบเบิก • เลือกวันที่ส่งของ แล้วเพิ่มสินค้าที่จะเบิกลงในรายการ • "
+    """Step 1: pick the delivery date + place — a new ใบเบิก, or open one made before (like a folder)."""
+    st.caption("1 วันที่ส่งของ + 1 สถานที่ = 1 ใบเบิก • เลือกวันที่และสถานที่ส่ง แล้วเพิ่มสินค้าที่จะเบิกลงในรายการ • "
                "ใบเบิกที่สร้างไว้แล้ว กดเปิดเพื่อแก้ไขได้")
     today = stock.today()
-    c_day, c_go = st.columns([1.4, 1], vertical_alignment="bottom")
+    c_day, c_place, c_go = st.columns([1.1, 1.4, 1], vertical_alignment="bottom")
     day = c_day.date_input("วันที่ส่งของ (ไม่ใช่วันที่บันทึก)", value=today, format="DD/MM/YYYY", key="wd_day",
                            min_value=today - timedelta(days=stock.HISTORY_DAYS))
-    exists = stock.sheet(data, day.isoformat()) is not None
-    if c_go.button("📂 เปิดใบเบิกวันนี้" if exists else "➕ สร้างใบเบิก", type="primary", width="stretch",
-                   key="wd_go"):
-        _open_sheet(day.isoformat())
+    place = c_place.selectbox("สถานที่ส่ง", stock.PLACES, index=None, placeholder="เลือกสถานที่ส่ง",
+                              key="wd_place")
+    exists = place is not None and stock.sheet(data, day.isoformat(), place) is not None
+    if c_go.button("📂 เปิดใบเบิกนี้" if exists else "➕ สร้างใบเบิก", type="primary", width="stretch",
+                   key="wd_go", disabled=place is None, help="เลือกสถานที่ส่งก่อน" if place is None else None):
+        _open_sheet(day.isoformat(), place)
 
-    sheets = sorted(data["withdrawals"], key=lambda w: w["date"], reverse=True)
+    order = {p: i for i, p in enumerate(stock.PLACES)}
+    sheets = sorted(data["withdrawals"], key=lambda w: (w["date"], -order.get(w["place"], -1)), reverse=True)
     st.markdown("**📁 ใบเบิกที่มีอยู่**")
     if not sheets:
         st.caption("ยังไม่มีใบเบิก")
@@ -225,11 +229,12 @@ def sheet_list(data: dict) -> None:
         names = list(dict.fromkeys(items[l["code"]]["name"] if l["code"] in items else l["name"] for l in w["lines"]))
         more = f" …อีก {len(names) - 3}" if len(names) > 3 else ""
         c_txt, c_btn = box.columns([5, 1], vertical_alignment="center")
-        c_txt.markdown(f"📁 **{day_label(w['date'])}** — {len(w['lines'])} รายการ  \n"
+        c_txt.markdown(f"📁 **{day_label(w['date'])} · {stock.place_label(w['place'])}** — "
+                       f"{len(w['lines'])} รายการ  \n"
                        f"<span style='font-size:0.8rem;color:#777'>{', '.join(names[:3])}{more} "
                        f"· บันทึกล่าสุด {w['saved_at']}</span>", unsafe_allow_html=True)
-        if c_btn.button("เปิด", key=f"wd_open_{w['date']}", width="stretch"):
-            _open_sheet(w["date"])
+        if c_btn.button("เปิด", key=f"wd_open_{w['date']}_{w['place']}", width="stretch"):
+            _open_sheet(w["date"], w["place"])
 
 
 def _current_lines(draft: list[dict], key: str) -> list[dict]:
@@ -251,12 +256,12 @@ def _same(a: list[dict], b: list[dict]) -> bool:
            [(l["code"], l["exp"], stock.num(l["qty"])) for l in b]
 
 
-def sheet_excel(data: dict, on: str) -> bytes:
-    """The saved ใบเบิก of one delivery date as an .xlsx file (A4, fits the page width when printed)."""
+def sheet_excel(data: dict, on: str, place: str) -> bytes:
+    """The saved ใบเบิก of one delivery date + place as an .xlsx file (A4, fits the page width when printed)."""
     from openpyxl import Workbook
     from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 
-    w = stock.sheet(data, on)
+    w = stock.sheet(data, on, place)
     items = {it["code"]: it for it in data["items"]}
     thin = Side(style="thin")
     box = Border(left=thin, right=thin, top=thin, bottom=thin)
@@ -271,7 +276,7 @@ def sheet_excel(data: dict, on: str) -> bytes:
     ws.title = f"ใบเบิก {date.fromisoformat(on):%d-%m-%Y}"
     ws["A1"] = "ใบเบิกสินค้า"
     ws["A1"].font = Font(size=16, bold=True)
-    ws["A2"] = f"วันที่ส่งของ: {day_label(on)}"
+    ws["A2"] = f"วันที่ส่งของ: {day_label(on)}    สถานที่ส่ง: {stock.place_label(place)}"
     ws["A2"].font = Font(size=12, bold=True)
     ws["A3"] = f"บันทึกล่าสุด: {w['saved_at']}  •  {len(w['lines'])} รายการ"
     ws["A3"].font = Font(size=10, color="666666")
@@ -309,9 +314,9 @@ def sheet_excel(data: dict, on: str) -> bytes:
     return buf.getvalue()
 
 
-def sheet_editor(data: dict, on: str) -> None:
+def sheet_editor(data: dict, on: str, place: str) -> None:
     """Step 2: the list of one ใบเบิก — add item + lot + จำนวน, edit / delete lines, save (cuts the stock)."""
-    saved = stock.sheet(data, on)
+    saved = stock.sheet(data, on, place)
     saved_lines = [{"code": l["code"], "exp": l["exp"], "qty": l["qty"]} for l in (saved or {"lines": []})["lines"]]
     old_names = {l["code"]: l for l in (saved or {"lines": []})["lines"]}
     if st.session_state.get("wd_draft") is None:
@@ -325,7 +330,7 @@ def sheet_editor(data: dict, on: str) -> None:
     c_back, c_title = st.columns([1, 3.2], vertical_alignment="center")
     if c_back.button("⬅️ ใบเบิกทั้งหมด", key="wd_back", width="stretch"):
         _open_sheet(None)
-    c_title.markdown(f"#### 📁 ใบเบิก ส่งวันที่ {day_label(on)}")
+    c_title.markdown(f"#### 📁 ใบเบิก ส่งวันที่ {day_label(on)}  \n📍 {stock.place_label(place)}")
     msg = st.session_state.pop("wd_msg", None)
     if msg:
         st.success(msg)
@@ -345,7 +350,7 @@ def sheet_editor(data: dict, on: str) -> None:
         for l in lines:
             if l["code"] == code:
                 used[l["exp"]] = stock.num(used.get(l["exp"], 0) + l["qty"])
-        have = stock.lots_for_sheet(data, on, code)
+        have = stock.lots_for_sheet(data, on, code, place)
         left = {e: stock.num(q - used.get(e, 0)) for e, q in have.items()}
         options = [e for e in sorted(left) if e and left[e] > 0] + ([""] if left.get("", 0) > 0 else [])
         today = stock.today().isoformat()
@@ -414,7 +419,7 @@ def sheet_editor(data: dict, on: str) -> None:
         if c not in items:
             errors.append(f"{old_names.get(c, {}).get('name', c)} ถูกลบออกจากสต็อกแล้ว — ลบแถวนี้ออก")
             continue
-        have = stock.lots_for_sheet(data, on, c).get(e, 0)
+        have = stock.lots_for_sheet(data, on, c, place).get(e, 0)
         if q > have:
             errors.append(f"{items[c]['name']} ล็อต {lot_label(e)} มีแค่ {fmt_num(have)} {items[c]['unit']} "
                           f"(ในรายการ {fmt_num(q)})")
@@ -426,15 +431,16 @@ def sheet_editor(data: dict, on: str) -> None:
     if s1.button("💾 บันทึกใบเบิก", type="primary", key=f"wd_save_{ver}", width="stretch",
                  disabled=not changed or bool(errors) or (not lines and not saved)):
         total = sum(1 for l in lines if l["qty"] > 0)
-        what = f"ใบเบิก ส่ง {fmt_date(on)} — {total} รายการ" if total else f"ลบใบเบิก ส่ง {fmt_date(on)}"
-        if save(lambda d: stock.save_withdrawal(d, date.fromisoformat(on), lines), f"Stock: {what}"):
+        where = f"ส่ง {fmt_date(on)} {stock.place_label(place)}"
+        what = f"ใบเบิก {where} — {total} รายการ" if total else f"ลบใบเบิก {where}"
+        if save(lambda d: stock.save_withdrawal(d, date.fromisoformat(on), lines, place), f"Stock: {what}"):
             st.session_state.update(wd_draft=None, wd_msg="✅ บันทึกใบเบิกแล้ว — ตัดสต็อกเรียบร้อย",
-                                    wd_open=on if total else None)
+                                    wd_open=(on, place) if total else None)
             _new_list_version()
             st.rerun()                   # whole page: the stock table behind shows the new numbers
     s_xl.download_button(
-        "📥 Download Excel", sheet_excel(data, on) if saved else b"", key=f"wd_xlsx_{ver}", width="stretch",
-        file_name=f"ใบเบิก_{on}.xlsx", on_click="ignore", disabled=not saved,
+        "📥 Download Excel", sheet_excel(data, on, place) if saved else b"", key=f"wd_xlsx_{ver}",
+        width="stretch", file_name=f"ใบเบิก_{on}_{stock.place_label(place).replace(' ', '_')}.xlsx", on_click="ignore", disabled=not saved,
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         help=("ไฟล์นี้เป็นใบเบิกที่บันทึกล่าสุด — กด 💾 บันทึกใบเบิก ก่อน ถ้าอยากได้รายการที่เพิ่งแก้"
               if changed else "รายการที่เบิกในวันนี้เป็นไฟล์ Excel") if saved else "บันทึกใบเบิกก่อนจึงดาวน์โหลดได้")
@@ -448,8 +454,8 @@ def sheet_editor(data: dict, on: str) -> None:
         with s2.popover("🗑️ ลบใบเบิกนี้", width="stretch"):
             st.caption("ลบแล้วสินค้าในใบเบิกนี้จะกลับเข้าสต็อก (เข้าล็อตเดิม)")
             if st.button("ยืนยันลบใบเบิก", type="primary", key=f"wd_del_{ver}"):
-                if save(lambda d: stock.save_withdrawal(d, date.fromisoformat(on), []),
-                        f"Stock: ลบใบเบิก ส่ง {fmt_date(on)}"):
+                if save(lambda d: stock.save_withdrawal(d, date.fromisoformat(on), [], place),
+                        f"Stock: ลบใบเบิก ส่ง {fmt_date(on)} {stock.place_label(place)}"):
                     st.session_state.update(wd_draft=None, wd_open=None,
                                             wd_msg=None)
                     _new_list_version()
