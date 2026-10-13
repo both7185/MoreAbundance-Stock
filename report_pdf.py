@@ -3,7 +3,7 @@ PDF version of the PO summary (same table as the Excel from report_builder.build
 without the ทุน / ทุนรวม / กำไร / กำไรรวม columns: it stops at รวมทั้งสิ้น (จำนวนเงินรวม).
 
 The Thai font (Sarabun, SIL Open Font License) is bundled in fonts/ so the PDF looks the same
-locally and on Streamlit Cloud. The title and the two table header rows repeat on every page.
+locally and on Streamlit Cloud. A4 portrait; the title and the two table header rows repeat on every page.
 """
 from __future__ import annotations
 
@@ -48,9 +48,9 @@ def _dsum(values) -> float:
 
 class _SummaryPDF(FPDF):
     def __init__(self, title: str, subtitle: str):
-        super().__init__(orientation="L", unit="mm", format="A4")
+        super().__init__(orientation="P", unit="mm", format="A4")
         self.title_text, self.subtitle_text = title, subtitle
-        self.set_margins(8, 8, 8)
+        self.set_margins(7, 8, 7)
         self.set_auto_page_break(True, margin=12)
         self.add_font(FONT, "", str(FONT_DIR / "Sarabun-Regular.ttf"))
         self.add_font(FONT, "B", str(FONT_DIR / "Sarabun-Bold.ttf"))
@@ -85,12 +85,12 @@ def build_pdf(summary: Summary, po_number_label: str | None = None) -> bytes:
 
     cols = summary.columns
     n_fixed, n_dates = len(FIXED_COLS), len(cols)
-    # same proportions as the Excel; ลำดับ a bit wider and รายการสินค้า wider so names wrap less
-    fixed_w = {"ลำดับ": 7, "รายการสินค้า": 30}
+    # roughly the Excel proportions, tightened to fit A4 portrait
+    fixed_w = {"ลำดับ": 6, "หมวดหมู่": 11, "รายการสินค้า": 27, "จำนวนรวม": 11, "ราคา/หน่วย": 12}
     widths = ([fixed_w.get(h, w) for h, w in FIXED_COLS]
               + [_header_width(f"({tag})") if tag else DATE_W for _, tag in cols] + [TOTAL_W])
     # many date columns: smaller text so the table still fits the page width
-    size = max(6.0, min(9.0, round(9 * 140 / sum(widths), 1)))
+    size = max(5.0, min(8.0, round(8 * 125 / sum(widths), 1)))
     pdf.set_font(FONT, "", size)
     pdf.set_draw_color(0, 0, 0)
     pdf.set_line_width(0.2)
