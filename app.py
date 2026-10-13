@@ -22,7 +22,7 @@ import streamlit as st
 # Streamlit Community Cloud re-reads app.py on every run but keeps the other modules in memory,
 # so after a `git push` the old report_builder.py / products.py ... would keep running until a reboot.
 # Reload any of our modules whose file changed since it was loaded (dependencies first).
-for _name in ("po_extractor", "datastore", "supabase_store", "products", "sup_codes", "report_builder", "monthly_report",
+for _name in ("po_extractor", "datastore", "supabase_store", "products", "sup_codes", "report_builder", "report_pdf", "monthly_report",
               "storage", "stock", "stock_page"):
     _mod = sys.modules.get(_name)
     if _mod is not None and getattr(_mod, "__file__", None):
@@ -46,6 +46,7 @@ from products import (
 from report_builder import (
     aggregate, build_workbook, col_label, date_range_label, is_update, latest_prices, load_catalog, po_tag, price_check,
 )
+from report_pdf import build_pdf
 from sup_codes import (
     code_meaning, export_sup_excel, group_label, import_sup_excel, letter_label, letter_order,
     load_sup, next_code, normalize_sup, save_sup_local, shop_map, to_json, validate_sup,
@@ -377,19 +378,30 @@ def daily_section() -> None:
         unmatched_panel(summary.unmatched, summary.missing_category, products, sup)
 
     # --------------------------------------------------------------------------- #
-    # Step 3: Excel
+    # Step 3: Excel / PDF
     # --------------------------------------------------------------------------- #
-    st.subheader("3. ดาวน์โหลด Excel")
-    xlsx = build_workbook(summary, po_label_override.strip() or None)
-    fname = f"ตารางสรุปใบสั่งซื้อ {date_range_label(summary.dates)}.xlsx".replace("/", "-")
-    st.download_button(
+    st.subheader("3. ดาวน์โหลด Excel / PDF")
+    po_label = po_label_override.strip() or None
+    fname = f"ตารางสรุปใบสั่งซื้อ {date_range_label(summary.dates)}".replace("/", "-")
+    c_xlsx, c_pdf = st.columns(2)
+    c_xlsx.download_button(
         "⬇️ ดาวน์โหลดไฟล์ Excel",
-        data=xlsx,
-        file_name=fname,
+        data=build_workbook(summary, po_label),
+        file_name=f"{fname}.xlsx",
         mime=XLSX_MIME,
         type="primary",
         key="daily_download",
+        width="stretch",
     )
+    c_pdf.download_button(
+        "⬇️ ดาวน์โหลดไฟล์ PDF",
+        data=build_pdf(summary, po_label),
+        file_name=f"{fname}.pdf",
+        mime="application/pdf",
+        key="daily_download_pdf",
+        width="stretch",
+    )
+    st.caption("PDF ไม่มีคอลัมน์ ทุน / ทุนรวม / กำไร / กำไรรวม (จบที่รวมทั้งสิ้น) • หัวตารางพิมพ์ซ้ำทุกหน้า")
 
     price_check_section(summary, products, sup)
 
