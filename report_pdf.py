@@ -26,6 +26,8 @@ C_WHITE = (255, 255, 255)
 # width per column in Excel units; scaled to the page width
 DATE_W = 10
 TOTAL_W = 15
+SHORT_LAST_PAGE = 5   # last page with this many item rows or fewer: try smaller text to remove it
+MIN_SHRINK = 1.5      # at most this many pt smaller than normal
 
 
 def _qty(v: float) -> str:
@@ -73,6 +75,31 @@ class _SummaryPDF(FPDF):
 
 def build_pdf(summary: Summary, po_number_label: str | None = None) -> bytes:
     """
+    The summary PDF. When the last page would hold only a few item rows (SHORT_LAST_PAGE), the text is
+    made a little smaller, step by step down to MIN_SHRINK pt less, so those rows fit on the page before.
+    """
+    pdf, col1_right = _render(summary, po_number_label)
+    if pdf.pages_count > 1 and _rows_on_last_page(pdf, col1_right) <= SHORT_LAST_PAGE:
+        for step in range(1, int(MIN_SHRINK / 0.25) + 1):
+            smaller, _ = _render(summary, po_number_label, shrink=step * 0.25)
+            if smaller.pages_count < pdf.pages_count:
+                pdf = smaller
+                break
+    return bytes(pdf.output())
+
+
+def _rows_on_last_page(pdf: FPDF, col1_right: float) -> int:
+    """Item rows on the last page = numbers in the ลำดับ column there (the footer labels sit further right)."""
+    import pymupdf
+
+    doc = pymupdf.open(stream=bytes(pdf.output()), filetype="pdf")
+    page = doc[-1]
+    x_max = col1_right * 72 / 25.4
+    return sum(1 for w in page.get_text("words") if w[2] <= x_max + 1 and w[4].isdigit())
+
+
+def _render(summary: Summary, po_number_label: str | None = None, shrink: float = 0.0) -> tuple[FPDF, float]:
+    """
       ลำดับ | หมวดหมู่ | รายการสินค้า | หน่วย | จำนวนรวม | ราคา/หน่วย | one จำนวน per date + tag | จำนวนเงินรวม
     then the same 3 footer rows as the Excel (Calculated Total, Original PO Total, Variance Check).
     """
@@ -90,7 +117,7 @@ def build_pdf(summary: Summary, po_number_label: str | None = None) -> bytes:
     widths = ([fixed_w.get(h, w) for h, w in FIXED_COLS]
               + [_header_width(f"({tag})") if tag else DATE_W for _, tag in cols] + [TOTAL_W])
     # many date columns: smaller text so the table still fits the page width
-    size = max(5.0, min(8.0, round(8 * 125 / sum(widths), 1)))
+    size = max(5.0, min(8.0, round(8 * 125 / sum(widths), 1))) - shrink
     pdf.set_font(FONT, "", size)
     pdf.set_draw_color(0, 0, 0)
     pdf.set_line_width(0.2)
@@ -167,4 +194,4 @@ def build_pdf(summary: Summary, po_number_label: str | None = None) -> bytes:
                     r.cell(qty_text, align="C", style=plain_b)
             r.cell(_money(round(money, 6)), align="R", style=plain_b)
 
-    return bytes(pdf.output())
+    return pdf, pdf.l_margin + pdf.epw * widths[0] / sum(widths)
