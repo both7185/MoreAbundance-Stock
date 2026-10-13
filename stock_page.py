@@ -4,14 +4,16 @@
 * Main table: click 📜 ดูประวัติ at the end of a row for that item's in/out history in a pop-up; click the
   วันหมดอายุ cell to edit its expiry lots (one lot per line). ✏️ แก้ไขตาราง switches the table to editing name / หมวด / หน่วย / ขั้นต่ำ (💾 บันทึก).
 * 📜 ประวัติทั้งหมด: every item's movements in one pop-up.
-* ➕➖ เข้า-ออกสินค้า: search an item, then เข้า / ออก / จำนวนในสต็อก / วันหมดอายุ / วันที่บันทึก → ยอดใหม่.
-  When taking out, pick which expiry lot it comes from (the earliest expiry is picked first).
-* 🆕 เพิ่มสินค้าใหม่: name, รหัส, หมวด only — quantities come from เข้า-ออกสินค้า.
+* ➕ สินค้าเข้า: search an item, then เข้า / จำนวนในสต็อก / วันหมดอายุ / วันที่บันทึก → ยอดใหม่.
+* 📤 เบิกสินค้าออก: pick the delivery date (one ใบเบิก per date, like a folder — open it again to edit), then
+  add items to its list: item + expiry lot (the earliest expiry is picked first) + จำนวน. The stock is cut
+  when the ใบเบิก is saved; editing it later changes the stock by the difference (stock.save_withdrawal).
+* 🆕 เพิ่มสินค้าใหม่: name, รหัส, หมวด only — quantities come from สินค้าเข้า.
 * 🗑️ ลบสินค้า: search an item, tick to confirm, delete (its old movements stay in ประวัติทั้งหมด).
 """
 from __future__ import annotations
 
-from datetime import timedelta
+from datetime import date, timedelta
 
 import pandas as pd
 import streamlit as st
@@ -103,7 +105,7 @@ def item_label(item: dict) -> str:
 # --------------------------------------------------------------------------- #
 # Dialogs
 # --------------------------------------------------------------------------- #
-@st.dialog("➕➖ เข้า-ออกสินค้า", width="large")
+@st.dialog("➕ สินค้าเข้า", width="large")
 def movement_dialog(data: dict) -> None:
     items = {it["code"]: it for it in data["items"]}
     code = st.selectbox(
@@ -126,74 +128,266 @@ def movement_dialog(data: dict) -> None:
     if item["lots"]:
         st.caption("วันหมดอายุ: " + lots_text(item))
 
-    c_in, c_out, c_count, c_exp, c_date, c_after = st.columns([1, 1, 1.1, 1.2, 1.2, 1.1])
+    c_in, c_count, c_exp, c_date, c_after = st.columns([1, 1.1, 1.2, 1.2, 1.1])
     count = c_count.number_input("จำนวนในสต็อก", min_value=0.0, value=float(item["qty"]), step=1.0,
                                  format="%g", key=f"mv_count_{code}",
                                  help="ยอดตามสต็อกตอนนี้ — ถ้านับจริงได้ไม่ตรง แก้ตัวเลขนี้เป็นยอดที่นับได้")
     qty_in = c_in.number_input("เข้า (+)", min_value=0.0, value=0.0, step=1.0, format="%g", key=f"mv_in_{code}")
-    out_locked = count <= 0
-    qty_out = c_out.number_input("ออก (−)", min_value=0.0, value=0.0, step=1.0, format="%g", key=f"mv_out_{code}",
-                                 disabled=out_locked,
-                                 help="สินค้าหมดสต็อก (0) — เอาออกไม่ได้" if out_locked else None)
-    if out_locked:
-        qty_out = 0.0
     exp = c_exp.date_input("วันหมดอายุ (ไม่บังคับ)", value=None, format="DD/MM/YYYY", key=f"mv_exp_{code}",
                            help="วันหมดอายุของล็อตที่รับเข้า — ไม่รู้ก็เว้นว่างได้")
     today = stock.today()
     on = c_date.date_input("วันที่บันทึก", value=today, format="DD/MM/YYYY", key=f"mv_date_{code}",
                            min_value=today - timedelta(days=stock.HISTORY_DAYS), max_value=today,
                            help=f"เก็บประวัติย้อนหลัง {stock.HISTORY_DAYS} วัน")
-    after = stock.num(count + qty_in - qty_out)
-    after_color = "#c62828" if after < 0 else COLORS[stock.status({**item, "qty": after})][0]
+    after = stock.num(count + qty_in)
+    after_color = COLORS[stock.status({**item, "qty": after})][0]
     c_after.markdown(
         f"<div style='font-size:0.875rem'>ยอดหลังบันทึก</div>"
         f"<div style='font-size:1.6rem;font-weight:700;color:{after_color};line-height:2.2rem'>"
         f"{fmt_num(after)} <span style='font-size:0.9rem'>{unit}</span></div>",
         unsafe_allow_html=True,
     )
-    if after < 0:
-        st.error(f"เอาออกได้ไม่เกิน {fmt_num(count + qty_in)} {unit}")
-
-    lot = None
-    if qty_out > 0 and after >= 0 and item["lots"]:
-        lot = lot_picker(item, count, qty_out, unit)
+    st.caption("เอาสินค้าออก: ใช้ปุ่ม 📤 เบิกสินค้าออก")
 
     recount = stock.num(count) != item["qty"]
-    if c_after.button("💾 บันทึก", type="primary", key=f"mv_save_{code}", disabled=after < 0, width="stretch"):
+    if c_after.button("💾 บันทึก", type="primary", key=f"mv_save_{code}", width="stretch"):
         def change(d: dict) -> str:
-            return stock.record(d, code, qty_in, qty_out, count if recount else None, exp, on, lot)
-        parts = [f"+{fmt_num(qty_in)}" if qty_in else "", f"−{fmt_num(qty_out)}" if qty_out else "",
-                 f"นับใหม่ {fmt_num(count)}" if recount else ""]
+            return stock.record(d, code, qty_in, 0, count if recount else None, exp, on)
+        parts = [f"+{fmt_num(qty_in)}" if qty_in else "", f"นับใหม่ {fmt_num(count)}" if recount else ""]
         msg = f"Stock: {item['name']} ({code}) {' '.join(p for p in parts if p)} → {fmt_num(after)} {unit}"
         if save(change, msg.replace("  ", " ")):
             st.session_state.pop("mv_search", None)
             st.rerun()
 
 
-def lot_picker(item: dict, count: float, qty_out: float, unit: str) -> str | None:
-    """เอาออกจากล็อตไหน: the earliest expiry is picked first; shows where the amount will come from."""
-    left = stock.plan_out(item, count, count)             # every lot (and the undated stock) at this count
-    if not left:
-        return None
-    lots = {t["exp"]: t["qty"] for t in left}
-    options = [e for e in sorted(lots) if e] + ([""] if "" in lots else [])
-    first = options[0]
+WEEKDAYS = ("จันทร์", "อังคาร", "พุธ", "พฤหัสบดี", "ศุกร์", "เสาร์", "อาทิตย์")
+W_CODE, W_NAME, W_LOT, W_QTY, W_UNIT = "รหัส", "สินค้า", "ล็อต (วันหมดอายุ)", "จำนวน", "หน่วย"
 
-    def label(e: str) -> str:
-        when = f"หมดอายุ {fmt_date(e)}" if e else "ไม่รู้วันหมดอายุ"
-        return f"{when} — มี {fmt_num(lots[e])} {unit}".rstrip() + (" (หมดก่อน)" if e and e == first else "")
 
-    c_lot, c_plan = st.columns([1.3, 2])
-    lot = c_lot.selectbox("เอาออกจากล็อต", options, format_func=label, key=f"mv_lot_{item['code']}",
-                          help="เลือกล็อตที่จะเอาออก — ถ้าล็อตนี้มีไม่พอ ส่วนที่เหลือเอาจากล็อตที่หมดอายุก่อน")
-    taken = stock.plan_out(item, count, qty_out, lot)
-    parts = [f"{fmt_date(t['exp']) if t['exp'] else 'ไม่รู้วันหมดอายุ'} −{fmt_num(t['qty'])}" for t in taken]
-    rest = stock.num(qty_out - sum(t["qty"] for t in taken))
-    if rest > 0:
-        parts.append(f"ของที่รับเข้ารอบนี้ −{fmt_num(rest)}")
-    c_plan.markdown("<div style='font-size:0.875rem'>จะเอาออกจาก</div>"
-                    f"<div style='padding-top:6px'>{' · '.join(parts)}</div>", unsafe_allow_html=True)
-    return lot
+def day_label(iso: str) -> str:
+    """'2026-10-14' -> '14/10/2026 (พุธ)'."""
+    d = date.fromisoformat(iso)
+    return f"{d:%d/%m/%Y} ({WEEKDAYS[d.weekday()]})"
+
+
+def lot_label(exp: str) -> str:
+    return fmt_date(exp) if exp else "ไม่รู้วันหมดอายุ"
+
+
+def _close_withdraw() -> None:
+    for k in ("wd_keep", "wd_open", "wd_draft", "wd_msg"):
+        st.session_state.pop(k, None)
+
+
+def _new_list_version() -> None:
+    st.session_state["wd_ver"] = st.session_state.get("wd_ver", 0) + 1
+
+
+@st.dialog("📤 เบิกสินค้าออก", width="large", on_dismiss=_close_withdraw)
+def withdraw_dialog() -> None:
+    data = stock.load()          # read every time: the dialog stays open after 💾 บันทึกใบเบิก
+    on = st.session_state.get("wd_open")
+    if on is None:
+        sheet_list(data)
+    else:
+        sheet_editor(data, on)
+
+
+def _open_sheet(on: str | None) -> None:
+    st.session_state.update(wd_open=on, wd_draft=None)
+    _new_list_version()
+    st.rerun(scope="fragment")
+
+
+def sheet_list(data: dict) -> None:
+    """Step 1: pick the delivery date — a new ใบเบิก, or open one made before (like a folder)."""
+    st.caption("1 วันที่ส่งของ = 1 ใบเบิก • เลือกวันที่ส่งของ แล้วเพิ่มสินค้าที่จะเบิกลงในรายการ • "
+               "ใบเบิกที่สร้างไว้แล้ว กดเปิดเพื่อแก้ไขได้")
+    today = stock.today()
+    c_day, c_go = st.columns([1.4, 1], vertical_alignment="bottom")
+    day = c_day.date_input("วันที่ส่งของ (ไม่ใช่วันที่บันทึก)", value=today, format="DD/MM/YYYY", key="wd_day",
+                           min_value=today - timedelta(days=stock.HISTORY_DAYS))
+    exists = stock.sheet(data, day.isoformat()) is not None
+    if c_go.button("📂 เปิดใบเบิกวันนี้" if exists else "➕ สร้างใบเบิก", type="primary", width="stretch",
+                   key="wd_go"):
+        _open_sheet(day.isoformat())
+
+    sheets = sorted(data["withdrawals"], key=lambda w: w["date"], reverse=True)
+    st.markdown("**📁 ใบเบิกที่มีอยู่**")
+    if not sheets:
+        st.caption("ยังไม่มีใบเบิก")
+        return
+    items = {it["code"]: it for it in data["items"]}
+    box = st.container(height=min(20 + 66 * len(sheets), 400), border=True)
+    for w in sheets:
+        names = list(dict.fromkeys(items[l["code"]]["name"] if l["code"] in items else l["name"] for l in w["lines"]))
+        more = f" …อีก {len(names) - 3}" if len(names) > 3 else ""
+        c_txt, c_btn = box.columns([5, 1], vertical_alignment="center")
+        c_txt.markdown(f"📁 **{day_label(w['date'])}** — {len(w['lines'])} รายการ  \n"
+                       f"<span style='font-size:0.8rem;color:#777'>{', '.join(names[:3])}{more} "
+                       f"· บันทึกล่าสุด {w['saved_at']}</span>", unsafe_allow_html=True)
+        if c_btn.button("เปิด", key=f"wd_open_{w['date']}", width="stretch"):
+            _open_sheet(w["date"])
+
+
+def _current_lines(draft: list[dict], key: str) -> list[dict]:
+    """The draft with what was changed in the list table (deleted rows / new จำนวน)."""
+    state = st.session_state.get(key) or {}
+    deleted = {int(i) for i in state.get("deleted_rows", [])}
+    edits = {int(i): e for i, e in state.get("edited_rows", {}).items()}
+    out = []
+    for i, line in enumerate(draft):
+        if i in deleted:
+            continue
+        qty = edits.get(i, {}).get(W_QTY, line["qty"])
+        out.append({**line, "qty": stock.num(qty) if qty is not None else 0})
+    return out
+
+
+def _same(a: list[dict], b: list[dict]) -> bool:
+    return [(l["code"], l["exp"], stock.num(l["qty"])) for l in a] == \
+           [(l["code"], l["exp"], stock.num(l["qty"])) for l in b]
+
+
+def sheet_editor(data: dict, on: str) -> None:
+    """Step 2: the list of one ใบเบิก — add item + lot + จำนวน, edit / delete lines, save (cuts the stock)."""
+    saved = stock.sheet(data, on)
+    saved_lines = [{"code": l["code"], "exp": l["exp"], "qty": l["qty"]} for l in (saved or {"lines": []})["lines"]]
+    old_names = {l["code"]: l for l in (saved or {"lines": []})["lines"]}
+    if st.session_state.get("wd_draft") is None:
+        st.session_state["wd_draft"] = [dict(l) for l in saved_lines]
+    draft = st.session_state["wd_draft"]
+    ver = st.session_state.get("wd_ver", 0)
+    list_key = f"wd_list_{ver}"
+    lines = _current_lines(draft, list_key)
+    items = {it["code"]: it for it in data["items"]}
+
+    c_back, c_title = st.columns([1, 3.2], vertical_alignment="center")
+    if c_back.button("⬅️ ใบเบิกทั้งหมด", key="wd_back", width="stretch"):
+        _open_sheet(None)
+    c_title.markdown(f"#### 📁 ใบเบิก ส่งวันที่ {day_label(on)}")
+    msg = st.session_state.pop("wd_msg", None)
+    if msg:
+        st.success(msg)
+    st.caption((f"บันทึกล่าสุด {saved['saved_at']}" if saved else "ใบเบิกใหม่ — ยังไม่ได้บันทึก") +
+               " • สต็อกจะถูกตัดตอนกด 💾 บันทึกใบเบิก • แก้ทีหลังได้ ระบบปรับสต็อกตามส่วนต่าง")
+
+    # ---- add a line: item -> lot (earliest expiry first) -> จำนวน
+    st.markdown("**➕ เพิ่มสินค้าที่จะเบิก**")
+    c_item, c_lot, c_qty, c_add = st.columns([2.2, 2.3, 1, 0.8], vertical_alignment="bottom")
+    code = c_item.selectbox("สินค้า", list(items), index=None, format_func=lambda c: item_label(items[c]),
+                            placeholder="พิมพ์ชื่อสินค้าหรือรหัส", key=f"wd_item_{ver}")
+    lot, qty, left = None, 0.0, {}
+    if code:
+        item = items[code]
+        unit = item["unit"]
+        used: dict[str, float] = {}
+        for l in lines:
+            if l["code"] == code:
+                used[l["exp"]] = stock.num(used.get(l["exp"], 0) + l["qty"])
+        have = stock.lots_for_sheet(data, on, code)
+        left = {e: stock.num(q - used.get(e, 0)) for e, q in have.items()}
+        options = [e for e in sorted(left) if e and left[e] > 0] + ([""] if left.get("", 0) > 0 else [])
+        today = stock.today().isoformat()
+
+        def label(e: str) -> str:
+            when = ("⚠️ หมดอายุแล้ว " if e and e < today else "หมดอายุ ") + fmt_date(e) if e else "ไม่รู้วันหมดอายุ"
+            first = " (หมดก่อน)" if e and e == options[0] else ""
+            return f"{when} — เหลือ {fmt_num(left[e])} {unit}".rstrip() + first
+
+        if options:
+            lot = c_lot.selectbox("ล็อต (วันหมดอายุ)", options, format_func=label, key=f"wd_lot_{ver}_{code}",
+                                  help="เลือกล็อตที่จะเบิก — ตั้งไว้ที่ล็อตที่หมดอายุก่อน")
+            qty = c_qty.number_input(f"จำนวน {unit}".strip(), min_value=0.0, max_value=float(left[lot]),
+                                     value=float(min(1, left[lot])), step=1.0, format="%g",
+                                     key=f"wd_qty_{ver}_{code}_{lot}")
+        else:
+            c_lot.selectbox("ล็อต (วันหมดอายุ)", [], placeholder="หมดสต็อก — ไม่มีของให้เบิก", disabled=True,
+                            key=f"wd_lot_none_{ver}")
+            c_qty.number_input("จำนวน", value=0.0, disabled=True, key=f"wd_qty_none_{ver}")
+    else:
+        c_lot.selectbox("ล็อต (วันหมดอายุ)", [], placeholder="เลือกสินค้าก่อน", disabled=True,
+                        key=f"wd_lot_none_{ver}")
+        c_qty.number_input("จำนวน", value=0.0, disabled=True, key=f"wd_qty_none_{ver}")
+    if c_add.button("➕ เพิ่ม", key=f"wd_add_{ver}", disabled=lot is None or qty <= 0, width="stretch"):
+        new = [dict(l) for l in lines]
+        same = next((l for l in new if l["code"] == code and l["exp"] == lot), None)
+        if same:
+            same["qty"] = stock.num(same["qty"] + qty)
+        else:
+            new.append({"code": code, "exp": lot, "qty": stock.num(qty)})
+        st.session_state["wd_draft"] = new
+        _new_list_version()
+        st.rerun(scope="fragment")
+
+    # ---- the list
+    st.markdown(f"**📋 รายการเบิก** ({len(lines)} รายการ)")
+    if not draft:
+        st.info("ยังไม่มีสินค้าในใบเบิกนี้ — เลือกสินค้าด้านบนแล้วกด ➕ เพิ่ม")
+    else:
+        def name_of(c: str) -> str:
+            return items[c]["name"] if c in items else f"{old_names.get(c, {}).get('name', '')} (ลบแล้ว)".lstrip()
+        df = pd.DataFrame([{
+            W_CODE: l["code"], W_NAME: name_of(l["code"]), W_LOT: lot_label(l["exp"]), W_QTY: float(l["qty"]),
+            W_UNIT: items[l["code"]]["unit"] if l["code"] in items else old_names.get(l["code"], {}).get("unit", ""),
+        } for l in draft])
+        st.data_editor(
+            df, num_rows="delete", hide_index=True, width="stretch", key=list_key,
+            disabled=[W_CODE, W_NAME, W_LOT, W_UNIT],
+            column_config={
+                W_CODE: st.column_config.TextColumn(width=70),
+                W_NAME: st.column_config.TextColumn(width=230),
+                W_LOT: st.column_config.TextColumn(width=140),
+                W_QTY: st.column_config.NumberColumn(min_value=0, required=True, format="localized", width=90,
+                                                     help="แก้จำนวนได้ในตาราง"),
+                W_UNIT: st.column_config.TextColumn(width=70),
+            },
+        )
+        st.caption("แก้จำนวน: กดช่องจำนวน • ลบรายการ: ติ๊กหน้าแถวแล้วกดถังขยะมุมขวาบนของตาราง")
+
+    # ---- check every item + lot against what is in stock
+    errors = []
+    totals: dict[tuple[str, str], float] = {}
+    for l in lines:
+        totals[(l["code"], l["exp"])] = stock.num(totals.get((l["code"], l["exp"]), 0) + l["qty"])
+    for (c, e), q in totals.items():
+        if c not in items:
+            errors.append(f"{old_names.get(c, {}).get('name', c)} ถูกลบออกจากสต็อกแล้ว — ลบแถวนี้ออก")
+            continue
+        have = stock.lots_for_sheet(data, on, c).get(e, 0)
+        if q > have:
+            errors.append(f"{items[c]['name']} ล็อต {lot_label(e)} มีแค่ {fmt_num(have)} {items[c]['unit']} "
+                          f"(ในรายการ {fmt_num(q)})")
+    for err in errors:
+        st.error(err)
+
+    changed = not _same(lines, saved_lines)
+    s1, s2, s3 = st.columns([1.3, 1.3, 2], vertical_alignment="center")
+    if s1.button("💾 บันทึกใบเบิก", type="primary", key=f"wd_save_{ver}", width="stretch",
+                 disabled=not changed or bool(errors) or (not lines and not saved)):
+        total = sum(1 for l in lines if l["qty"] > 0)
+        what = f"ใบเบิก ส่ง {fmt_date(on)} — {total} รายการ" if total else f"ลบใบเบิก ส่ง {fmt_date(on)}"
+        if save(lambda d: stock.save_withdrawal(d, date.fromisoformat(on), lines), f"Stock: {what}"):
+            st.session_state.update(wd_draft=None, wd_msg="✅ บันทึกใบเบิกแล้ว — ตัดสต็อกเรียบร้อย",
+                                    wd_open=on if total else None)
+            _new_list_version()
+            st.rerun()                   # whole page: the stock table behind shows the new numbers
+    if changed:
+        if s2.button("↩️ ยกเลิกการแก้ไข", key=f"wd_reset_{ver}", width="stretch"):
+            st.session_state["wd_draft"] = None
+            _new_list_version()
+            st.rerun(scope="fragment")
+        s3.caption("⚠️ มีการแก้ไขที่ยังไม่ได้บันทึก — สต็อกยังไม่ถูกตัด")
+    elif saved:
+        with s3.popover("🗑️ ลบใบเบิกนี้", width="stretch"):
+            st.caption("ลบแล้วสินค้าในใบเบิกนี้จะกลับเข้าสต็อก (เข้าล็อตเดิม)")
+            if st.button("ยืนยันลบใบเบิก", type="primary", key=f"wd_del_{ver}"):
+                if save(lambda d: stock.save_withdrawal(d, date.fromisoformat(on), []),
+                        f"Stock: ลบใบเบิก ส่ง {fmt_date(on)}"):
+                    st.session_state.update(wd_draft=None, wd_open=None,
+                                            wd_msg=None)
+                    _new_list_version()
+                    st.rerun()
 
 
 @st.dialog("🗑️ ลบสินค้า")
@@ -225,7 +419,7 @@ def delete_dialog(data: dict) -> None:
 
 @st.dialog("🆕 เพิ่มสินค้าใหม่")
 def add_dialog(data: dict) -> None:
-    st.caption("ใส่แค่ชื่อ รหัส และหมวด — จำนวน ขั้นต่ำ วันหมดอายุ ไปกรอกตอนเข้า-ออกสินค้า / ในตารางหลัก")
+    st.caption("ใส่แค่ชื่อ รหัส และหมวด — จำนวน ขั้นต่ำ วันหมดอายุ ไปกรอกตอนสินค้าเข้า / ในตารางหลัก")
     name = st.text_input("ชื่อสินค้า", key="add_name")
     cat = st.selectbox("หมวด", list(CATEGORIES), index=None, placeholder="เลือกหมวด",
                        format_func=lambda c: f"{c} ({CATEGORIES[c]})", key="add_cat")
@@ -273,10 +467,14 @@ def render(show_flash=None) -> None:
     ver = st.session_state.get("stock_ver", 0)
     dirty = st.session_state.get("stock_dirty", False)
 
-    b1, b2, b3, b4, _ = st.columns([1.2, 1.2, 1.2, 1.2, 1.6])
-    if b1.button("➕➖ เข้า-ออกสินค้า", type="primary", width="stretch", disabled=dirty):
+    b1, b0, b2, b3, b4, _ = st.columns([1.1, 1.2, 1.2, 1.2, 1.1, 0.6])
+    if b1.button("➕ สินค้าเข้า", type="primary", width="stretch", disabled=dirty):
         st.session_state["mv_search"] = None
         movement_dialog(data)
+    if b0.button("📤 เบิกสินค้าออก", type="primary", width="stretch", disabled=dirty):
+        st.session_state.update(wd_keep=True, wd_open=None, wd_draft=None)
+    if st.session_state.get("wd_keep"):          # stays open after 💾 บันทึกใบเบิก until closed with ✕
+        withdraw_dialog()
     if b2.button("🆕 เพิ่มสินค้าใหม่", width="stretch", disabled=dirty):
         add_dialog(data)
     if b3.button("📜 ประวัติทั้งหมด", width="stretch", disabled=dirty):
@@ -297,7 +495,7 @@ def render(show_flash=None) -> None:
     cat_filter = f2.selectbox("หมวด", ["ทุกหมวด"] + list(CATEGORIES), label_visibility="collapsed",
                               key="stock_cat", disabled=dirty)
     if dirty:
-        st.caption("⚠️ บันทึกหรือยกเลิกการแก้ไขในตารางก่อน จึงจะค้นหา / เข้า-ออกสินค้าได้")
+        st.caption("⚠️ บันทึกหรือยกเลิกการแก้ไขในตารางก่อน จึงจะค้นหา / รับเข้า / เบิกสินค้าได้")
     summary_cards(items)
 
     q = query.strip().lower()
@@ -319,7 +517,7 @@ def render(show_flash=None) -> None:
         C_NAME: st.column_config.TextColumn(width=230),
         C_CODE: st.column_config.TextColumn(width=70),
         C_CAT: st.column_config.TextColumn(width=95),
-        C_QTY: st.column_config.NumberColumn(width=115, help="เปลี่ยนยอดที่ปุ่ม ➕➖ เข้า-ออกสินค้า"),
+        C_QTY: st.column_config.NumberColumn(width=115, help="เปลี่ยนยอดที่ปุ่ม ➕ สินค้าเข้า / 📤 เบิกสินค้าออก"),
         C_UNIT: st.column_config.TextColumn(width=70),
         C_MIN: st.column_config.NumberColumn(width=70, help="ต่ำกว่าขั้นต่ำ = Low stock • 0 = Out of stock"),
         C_STATUS: st.column_config.TextColumn(width=110),
@@ -432,7 +630,10 @@ def history_rows(rows: list[dict], items: dict[str, dict] | None = None, unit: s
             "วันหมดอายุ": " · ".join(
                 ([f"เข้า {fmt_date(m['exp'])}"] if m["exp"] and m["in"] else [fmt_date(m["exp"])] if m["exp"] else [])
                 + [f"ออก {fmt_date(t['exp']) if t['exp'] else 'ไม่รู้วันหมดอายุ'} ({fmt_num(t['qty'])})"
-                   for t in m.get("out_lots", [])]),
+                   for t in m.get("out_lots", [])]
+                + [f"คืน {fmt_date(t['exp']) if t['exp'] else 'ไม่รู้วันหมดอายุ'} ({fmt_num(t['qty'])})"
+                   for t in m.get("back_lots", [])]),
+            "หมายเหตุ": m.get("note", ""),
             "บันทึกเมื่อ": m.get("saved_at", ""),
         })
         out.append(row)
