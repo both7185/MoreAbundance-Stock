@@ -219,7 +219,8 @@ def sheet_list(data: dict) -> None:
 
     order = {p: i for i, p in enumerate(stock.PLACES)}
     sheets = sorted(data["withdrawals"], key=lambda w: (w["date"], -order.get(w["place"], -1)), reverse=True)
-    st.markdown("**📁 ใบเบิกที่มีอยู่**")
+    st.markdown(f"**📁 ใบเบิกที่มีอยู่** <span style='font-size:0.8rem;color:#777'>— เก็บย้อนหลัง {stock.HISTORY_DAYS} วัน "
+                f"(นับจากวันที่ส่งของ) เปิดดู แก้ไข และดาวน์โหลด Excel ได้ทุกใบ</span>", unsafe_allow_html=True)
     if not sheets:
         st.caption("ยังไม่มีใบเบิก")
         return
