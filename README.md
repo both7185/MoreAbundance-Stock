@@ -101,7 +101,8 @@ A separate page (sidebar), not linked to the PO features. Data: `stock.json`.
 A separate page (sidebar), not linked to the PO or stock features. Nothing is downloaded: the result is a table on the page.
 
 * Upload **1. ไฟล์ราคา จปร** (columns used: รายการ, หน่วย, ราคาพค, ราคาซื้อ) and **2. ไฟล์ราคากลางบ้านราชวิถี**
-  (รายการ, ราคากลาง/หน่วย, หน่วย). The columns are found from the header words on each page.
+  (รายการ, ราคากลาง/หน่วย, หน่วย), each as PDF or Excel (.xlsx). The columns are found from the header words (on each
+  page of a PDF; the header row of an Excel sheet). Excel is the most exact.
 * A PDF that holds text (e.g. printed from Google Sheets) is read directly. A **scanned** PDF (pages that are only pictures)
   is read with OCR (Tesseract, Thai), about 3 seconds a page: each page is turned upright, straightened, the table lines are
   found and every column is read on its own. Prices come out reliably; product names may have small spelling slips.
