@@ -23,7 +23,7 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
-DATA_FILES = ["products.csv", "sup_codes.json", "stock.json", "price_matches.json"]
+DATA_FILES = ["products.csv", "sup_codes.json", "stock.json"]
 APP_DIR = Path(__file__).parent
 PROTECT_SECONDS = 300
 _recent_push: dict[str, tuple[bytes, float]] = {}   # file -> (content we committed, when)

@@ -108,13 +108,12 @@ A separate page (sidebar), not linked to the PO or stock features. Nothing is do
   found and every column is read on its own. Prices come out reliably; product names may have small spelling slips.
   Tesseract is installed on Streamlit Cloud by `packages.txt`; on a PC without it only text PDFs can be read.
 * The same product of both files is shown on one row, with the two files as two column groups (จปร left, ราชวิถี right).
-  Rows follow the ราชวิถี list (starting with กระชาย); items only in the จปร file come last. Filter: ทั้งหมด / มีทั้ง 2 ไฟล์ / มีแค่ไฟล์ จปร /
-  มีแค่ไฟล์ราชวิถี, plus a search box. An orange หน่วย cell means the two files use different units.
-* Names that are the same (ignoring spaces) are paired automatically. Names that are only similar are listed in
-  **🔗 ยืนยันชื่อที่สะกดต่างกัน** with the closest จปร name filled in: tick ✔ ยืนยัน (or pick another name) and press
-  💾 บันทึกการจับคู่. Very close names (≥ 93%, no other candidate as close) come pre-ticked, to be checked before saving.
-* Confirmed pairs are remembered in `price_matches.json` (its own file in Supabase / the data branch, like the other data
-  files), so the next upload of the lists lines up without asking again. **📌 คู่ที่ยืนยันไว้แล้ว** undoes a wrong pair.
+  Rows follow the ราชวิถี list (starting with กระชาย); items only in the จปร file come last. Filter: ทั้งหมด / มีทั้ง 2 ไฟล์ /
+  ชื่อไม่ตรงกัน (ตรวจดู) / มีแค่ไฟล์ จปร / มีแค่ไฟล์ราชวิถี, plus a search box. An orange หน่วย cell means the two files use different units.
+* Names that are the same (ignoring spaces) go on one row. Names that are **more than 70% similar** are paired
+  automatically too (the most similar pair first, each item used once); their names are shaded yellow so they can be
+  checked by eye, and the filter **ชื่อไม่ตรงกัน (ตรวจดู)** lists only them. Everything else stays unpaired. Nothing is
+  saved: the page only reads the two uploaded files.
 
 ### Where the website keeps its data (Supabase, GitHub `data` branch as backup)
 
@@ -206,7 +205,6 @@ When running locally (`run.bat`) without secrets, the files in the folder are th
 | `stock.py` / `stock_page.py` | Stock page: data logic (codes, status, lots, history) / Streamlit UI |
 | `stock.json` | **Stock**: items with quantity, ขั้นต่ำ and expiry lots, plus 90 days of movements. Edited on the 📦 page |
 | `price_compare.py` / `compare_page.py` | Price comparison page: reading the price-list PDFs (text or OCR) and matching names / Streamlit UI |
-| `price_matches.json` | **Confirmed name pairs** of the price comparison page (created on first save, kept with the other data files) |
 | `packages.txt` | System packages for Streamlit Cloud: Tesseract OCR with Thai, for scanned price lists |
 
 ## Things worth knowing

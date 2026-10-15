@@ -14,36 +14,31 @@ Reading a file (Excel .xlsx: the header row gives the columns, see read_price_ex
     packages.txt; on a PC without it only text PDFs can be read.
 
 Matching
-  the same name (ignoring spaces, products.norm) -> same row; pairs the user confirmed (kept in
-  price_matches.json) -> same row; other names are only *suggested* by similarity until confirmed.
+  the same name (ignoring spaces, products.norm) -> same row; otherwise names more than 70% similar are
+  paired automatically (the most similar first, each item used once) and the user checks them on the page;
+  the rest stay unpaired.
 """
 from __future__ import annotations
 
 import csv
 import io
-import json
 import re
 import shutil
 import os
 import subprocess
 from concurrent.futures import ThreadPoolExecutor
 from difflib import SequenceMatcher
-from pathlib import Path
 
 import pymupdf
 
 from po_extractor import THAI_DIGITS, normalize_thai
 from products import norm
 
-MATCHES_FILE = "price_matches.json"
-MATCHES_PATH = Path(__file__).with_name(MATCHES_FILE)
-
 # price columns of each file: (column label shown on the page, words that identify its header)
 JPR = {"key": "jpr", "title": "ราคา จปร", "prices": [("ราคาพค", ("พค",)), ("ราคาซื้อ", ("ซื้อ",))]}
 RW = {"key": "rw", "title": "ราคากลางบ้านราชวิถี", "prices": [("ราคากลาง/หน่วย", ("กลาง",))]}
 
-SUGGEST_MIN = 0.55      # show a suggestion from this similarity
-PREFILL_MIN = 0.93      # pre-select the suggestion (the user still checks it before saving)
+AUTO_MIN = 0.70         # names more similar than this are paired automatically (the user checks them)
 
 
 class ReadError(RuntimeError):
@@ -603,101 +598,40 @@ def similarity(a: str, b: str) -> float:
     return _score(_keys(a), _keys(b))
 
 
-def load_pairs(text: str | bytes | None = None) -> list[dict]:
-    """Confirmed pairs [{'jpr': name, 'rw': name}] from price_matches.json (local file when no text)."""
-    if text is None:
-        if not MATCHES_PATH.exists():
-            return []
-        text = MATCHES_PATH.read_text(encoding="utf-8")
-    if isinstance(text, bytes):
-        text = text.decode("utf-8")
-    try:
-        data = json.loads(text) if text.strip() else {}
-    except ValueError:
-        return []
-    return [{"jpr": str(p.get("jpr", "")), "rw": str(p.get("rw", ""))}
-            for p in data.get("pairs", []) if p.get("jpr") and p.get("rw")]
-
-
-def pairs_json(pairs: list[dict]) -> str:
-    return json.dumps({"pairs": pairs}, ensure_ascii=False, indent=1) + "\n"
-
-
-def merge_pairs(old: list[dict], add: list[dict], remove: list[dict] = ()) -> list[dict]:
-    """New pairs replace older ones that use either of the same names."""
-    gone = {(norm(p["jpr"]), norm(p["rw"])) for p in remove}
-    used_j = {norm(p["jpr"]) for p in add}
-    used_r = {norm(p["rw"]) for p in add}
-    keep = [p for p in old if (norm(p["jpr"]), norm(p["rw"])) not in gone
-            and norm(p["jpr"]) not in used_j and norm(p["rw"]) not in used_r]
-    return keep + [{"jpr": p["jpr"], "rw": p["rw"]} for p in add]
-
-
-def match(jpr: list[dict], rw: list[dict], pairs: list[dict]) -> dict:
+def match(jpr: list[dict], rw: list[dict]) -> dict:
     """
-    -> {'rows': [(jpr index | None, rw index | None, how)], 'suggest': {rw index: [(jpr index, score), ...]}}
-    how: 'same' (same name) / 'saved' (confirmed pair) / '' (only in one file).
+    -> {'rows': [(jpr index | None, rw index | None, how, score)]}
+    how: 'same' (same name) / 'similar' (names more than AUTO_MIN alike, paired automatically) / '' (only in one file).
     Rows follow the ราชวิถี order (the user's request); items only in the จปร file come last, in their own order.
     """
-    j_of: dict[int, tuple[int, str]] = {}            # rw index -> (jpr index, how)
+    j_of: dict[int, tuple[int, str, float]] = {}     # rw index -> (jpr index, how, score)
     used_j: set[int] = set()
     by_key: dict[str, list[int]] = {}
     for i, it in enumerate(jpr):
         by_key.setdefault(norm(it["name"]), []).append(i)
 
-    def take(key: str) -> int | None:
-        for i in by_key.get(key, []):
-            if i not in used_j:
-                return i
-        return None
-
     for r, it in enumerate(rw):
-        i = take(norm(it["name"]))
+        i = next((i for i in by_key.get(norm(it["name"]), []) if i not in used_j), None)
         if i is not None:
-            j_of[r] = (i, "same")
+            j_of[r] = (i, "same", 1.0)
             used_j.add(i)
-    saved = {}
-    for p in pairs:
-        saved.setdefault(norm(p["rw"]), []).append(norm(p["jpr"]))
-    for r, it in enumerate(rw):
-        if r in j_of:
-            continue
-        for key in saved.get(norm(it["name"]), []):
-            i = take(key)
-            if i is not None:
-                j_of[r] = (i, "saved")
-                used_j.add(i)
-                break
 
     free_j = [i for i in range(len(jpr)) if i not in used_j]
     jkeys = {i: _keys(jpr[i]["name"]) for i in free_j}
-    suggest: dict[int, list[tuple[int, float]]] = {}
+    cands = []                                         # (score, tie-break, rw index, jpr index)
     for r, it in enumerate(rw):
         if r in j_of:
             continue
         rk = _keys(it["name"])
-        top: list[tuple[int, float]] = []                 # best 3, kept sorted
         for i in free_j:
-            floor = max(SUGGEST_MIN, top[2][1] if len(top) == 3 else 0.0)
-            sc = _score(rk, jkeys[i], floor - 1e-9)
-            if sc >= floor and sc > 0:
-                top = sorted(top + [(i, sc)], key=lambda s: -s[1])[:3]
-        suggest[r] = top
+            sc = _score(rk, jkeys[i], AUTO_MIN)
+            if sc > AUTO_MIN:   # equal scores: the closer whole name wins ('กระชาย (หั่นฝอย)' -> 'กระชายสดหั่นฝอย')
+                cands.append((sc, SequenceMatcher(None, rk[0], jkeys[i][0]).ratio(), r, i))
+    for sc, _, r, i in sorted(cands, key=lambda c: (-c[0], -c[1], c[2], c[3])):   # most similar first, one-to-one
+        if r not in j_of and i not in used_j:
+            j_of[r] = (i, "similar", sc)
+            used_j.add(i)
 
-    rows = [(j_of[r][0], r, j_of[r][1]) if r in j_of else (None, r, "") for r in range(len(rw))]
-    rows += [(i, None, "") for i in range(len(jpr)) if i not in used_j]
-    return {"rows": rows, "suggest": suggest}
-
-
-def prefill(suggest: dict[int, list[tuple[int, float]]]) -> dict[int, int]:
-    """Pre-selected pairs: a very similar name with no close second, each จปร item used once."""
-    cands = []
-    for r, sc in suggest.items():
-        if sc and sc[0][1] >= PREFILL_MIN and (len(sc) == 1 or sc[1][1] <= sc[0][1] - 0.04):
-            cands.append((sc[0][1], r, sc[0][0]))
-    out, used = {}, set()
-    for _, r, i in sorted(cands, reverse=True):
-        if i not in used:
-            out[r] = i
-            used.add(i)
-    return out
+    rows = [(j_of[r][0], r, j_of[r][1], j_of[r][2]) if r in j_of else (None, r, "", 0.0) for r in range(len(rw))]
+    rows += [(i, None, "", 0.0) for i in range(len(jpr)) if i not in used_j]
+    return {"rows": rows}
