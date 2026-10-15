@@ -23,7 +23,7 @@ import streamlit as st
 # so after a `git push` the old report_builder.py / products.py ... would keep running until a reboot.
 # Reload any of our modules whose file changed since it was loaded (dependencies first).
 for _name in ("po_extractor", "datastore", "supabase_store", "products", "sup_codes", "report_builder", "report_pdf", "monthly_report",
-              "storage", "stock", "stock_page"):
+              "storage", "stock", "stock_page", "price_compare", "compare_page"):
     _mod = sys.modules.get(_name)
     if _mod is not None and getattr(_mod, "__file__", None):
         _mtime = os.path.getmtime(_mod.__file__)
@@ -31,6 +31,7 @@ for _name in ("po_extractor", "datastore", "supabase_store", "products", "sup_co
             _mod = importlib.reload(_mod)
         _mod._file_mtime = _mtime
 
+import compare_page
 import stock_page
 import storage
 from monthly_report import (
@@ -1123,7 +1124,13 @@ def stock_view() -> None:
     stock_page.render(show_flash)
 
 
+def compare_view() -> None:
+    sync_data()
+    compare_page.render(show_flash)
+
+
 st.navigation([
     st.Page(po_page, title="สรุปใบสั่งซื้อ", icon="🧾", url_path="po", default=True),
     st.Page(stock_view, title="สต็อกสินค้า", icon="📦", url_path="stock"),
+    st.Page(compare_view, title="เทียบราคา", icon="⚖️", url_path="compare"),
 ]).run()
