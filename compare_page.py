@@ -30,13 +30,15 @@ def _flash(kind: str, text: str) -> None:
     st.session_state.setdefault("_flash", []).append((kind, text))
 
 
+# price_compare._file_mtime (set by app.py) is part of the cache keys below, so results cached by an older
+# price_compare.py are not reused after an update (Streamlit Cloud keeps the cache across a git push)
 @st.cache_data(show_spinner=False, max_entries=8)
-def _read(data: bytes, key: str) -> dict:
-    return pc.read_price_pdf(data, pc.JPR if key == "jpr" else pc.RW)
+def _read(data: bytes, name: str, key: str, ver: float = 0) -> dict:
+    return pc.read_price_file(data, name, pc.JPR if key == "jpr" else pc.RW)
 
 
 @st.cache_data(show_spinner=False, max_entries=8)
-def _match(jpr: list[dict], rw: list[dict], pairs: list[dict]) -> dict:
+def _match(jpr: list[dict], rw: list[dict], pairs: list[dict], ver: float = 0) -> dict:
     return pc.match(jpr, rw, pairs)
 
 
@@ -44,15 +46,16 @@ def _load(up, spec: dict) -> dict | None:
     if up is None:
         return None
     try:
-        with st.spinner(f"กำลังอ่าน{spec['title']}... (ไฟล์สแกนใช้เวลาราว 3 วินาทีต่อหน้า)"):
-            got = _read(up.getvalue(), spec["key"])
+        with st.spinner(f"กำลังอ่าน{spec['title']}... (PDF สแกนใช้เวลาราว 3 วินาทีต่อหน้า)"):
+            got = _read(up.getvalue(), up.name, spec["key"], getattr(pc, "_file_mtime", 0))
     except pc.ReadError as e:
         st.error(f"อ่านไฟล์ {up.name} ไม่ได้: {e}")
         return None
     except Exception as e:
         st.error(f"อ่านไฟล์ {up.name} ไม่ได้: {str(e)[:200]}")
         return None
-    how = "อ่านจากภาพสแกน (OCR) — ชื่อสินค้าอาจสะกดผิดเล็กน้อย" if got["method"] == "ocr" else "อ่านจากข้อความในไฟล์"
+    how = {"ocr": "อ่านจากภาพสแกน (OCR) — ชื่อสินค้าอาจสะกดผิดเล็กน้อย ถ้ามีไฟล์ Excel ใช้ Excel จะแม่นกว่า",
+           "excel": "อ่านจากไฟล์ Excel"}.get(got["method"], "อ่านจากข้อความในไฟล์")
     st.caption(f"✅ {spec['title']}: {len(got['items'])} รายการ • {how}")
     for n in got["notes"]:
         st.warning(n)
@@ -284,10 +287,10 @@ def render(show_flash=None) -> None:
     st.caption("อัปโหลด 2 ไฟล์ → สินค้าตัวเดียวกันจะเรียงอยู่แถวเดียวกัน (ซ้าย = ไฟล์ราคา จปร, ขวา = ไฟล์ราคากลางบ้านราชวิถี) • "
                "ชื่อที่สะกดต่างกันนิดหน่อย ให้กดยืนยันก่อนจึงจะจับคู่")
     c1, c2 = st.columns(2)
-    up_j = c1.file_uploader("1. ไฟล์ราคา จปร (PDF)", type=["pdf"], key="cmp_jpr",
+    up_j = c1.file_uploader("1. ไฟล์ราคา จปร (PDF / Excel)", type=["pdf", "xlsx"], key="cmp_jpr",
                             help="ใช้คอลัมน์ รายการ, หน่วย, ราคาพค, ราคาซื้อ")
-    up_r = c2.file_uploader("2. ไฟล์ราคากลางบ้านราชวิถี (PDF)", type=["pdf"], key="cmp_rw",
-                            help="ใช้คอลัมน์ รายการ, ราคากลาง/หน่วย, หน่วย • ไฟล์สแกนก็ได้ (อ่านด้วย OCR)")
+    up_r = c2.file_uploader("2. ไฟล์ราคากลางบ้านราชวิถี (PDF / Excel)", type=["pdf", "xlsx"], key="cmp_rw",
+                            help="ใช้คอลัมน์ รายการ, ราคากลาง/หน่วย, หน่วย • PDF สแกนก็ได้ (อ่านด้วย OCR) แต่ Excel แม่นกว่า")
     with c1:
         got_j = _load(up_j, pc.JPR)
     with c2:
@@ -297,7 +300,7 @@ def render(show_flash=None) -> None:
         return
     jpr, rw = got_j["items"], got_r["items"]
     with st.spinner("กำลังจับคู่ชื่อสินค้า..."):
-        result = _match(jpr, rw, current_pairs())
+        result = _match(jpr, rw, current_pairs(), getattr(pc, "_file_mtime", 0))
 
     both = sum(1 for i, r, _ in result["rows"] if i is not None and r is not None)
     m1, m2, m3 = st.columns(3)
@@ -314,5 +317,5 @@ def render(show_flash=None) -> None:
                     label_visibility="collapsed")
     query = f2.text_input("ค้นหา", placeholder="ค้นหาชื่อสินค้า...", key="cmp_query", label_visibility="collapsed")
     shown = comparison_table(jpr, rw, result, show, query)
-    st.caption(f"แสดง {shown} แถว • เรียงตามลำดับในไฟล์ จปร แล้วต่อด้วยสินค้าที่มีแค่ในไฟล์ราชวิถี • "
+    st.caption(f"แสดง {shown} แถว • เรียงตามลำดับในไฟล์ราชวิถี แล้วต่อด้วยสินค้าที่มีแค่ในไฟล์ จปร • "
                "ช่องหน่วยสีส้ม = หน่วยของ 2 ไฟล์ไม่เหมือนกัน (เทียบราคาตรงๆ ไม่ได้)")

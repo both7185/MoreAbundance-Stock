@@ -4,7 +4,7 @@ Read two price lists and line up the same product (page ⚖️ เทียบ�
     ไฟล์ราคา จปร              -> รายการ, หน่วย, ราคาพค, ราคาซื้อ
     ไฟล์ราคากลางบ้านราชวิถี   -> รายการ, ราคากลาง/หน่วย, หน่วย
 
-Reading a PDF
+Reading a file (Excel .xlsx: the header row gives the columns, see read_price_excel)
   * text PDF (e.g. printed from Google Sheets): words + positions from PyMuPDF. The columns come from the
     header words of each page (รายการ / หน่วย / ราคาพค / ราคาซื้อ / ราคากลาง), so the column positions may
     change from page to page.
@@ -94,10 +94,14 @@ def header_roles(texts: list[str], spec: dict) -> dict[int, str]:
     t = [_header_key(x) for x in texts]
     roles: dict[int, str] = {}
     for label, keys in spec["prices"]:
-        for i, h in enumerate(t):
-            if i not in roles and any(_fuzzy_in(k, h, 0.99 if len(k) <= 2 else 0.75) for k in keys):
-                roles[i] = label
-                break
+        def has_key(h: str) -> bool:
+            return any(_fuzzy_in(k, h, 0.99 if len(k) <= 2 else 0.75) for k in keys)
+        # 'ราคาซื้อ' rather than 'ปริมาณที่คาดว่าจะสั่งซื้อ': a header that also says ราคา wins
+        found = next((i for i, h in enumerate(t) if i not in roles and has_key(h) and _fuzzy_in("ราคา", h)), None)
+        if found is None:
+            found = next((i for i, h in enumerate(t) if i not in roles and has_key(h)), None)
+        if found is not None:
+            roles[found] = label
     tests = (
         ("name", lambda h: _fuzzy_in("รายการ", h)),
         ("unit", lambda h: _fuzzy_in("หน่วย", h) and not _fuzzy_in("ราคา", h)),
@@ -488,6 +492,67 @@ def read_price_pdf(data: bytes, spec: dict, progress=None) -> dict:
         return {"items": items, "method": "ocr", "notes": notes}
 
 
+def read_price_excel(data: bytes, spec: dict) -> dict:
+    """Excel (.xlsx): the first sheet with a header row (รายการ + ราคา) gives the columns; every row below it
+    with a name is an item. -> same shape as read_price_pdf()."""
+    import openpyxl
+    try:
+        wb = openpyxl.load_workbook(io.BytesIO(data), data_only=True, read_only=True)
+    except Exception as e:
+        raise ReadError(f"เปิดไฟล์ Excel ไม่ได้: {e}") from e
+
+    def text(v) -> str:
+        if v is None:
+            return ""
+        if isinstance(v, float) and v.is_integer():
+            v = int(v)
+        return str(v).strip()
+
+    def price(v) -> float | None:
+        if isinstance(v, bool):
+            return None
+        if isinstance(v, (int, float)):
+            return float(v)
+        return to_price(text(v))
+
+    problem = "ไม่พบหัวตาราง (คำว่า 'รายการ' และ 'ราคา') ในไฟล์"
+    for ws in wb.worksheets:
+        rows = [list(r) for r in ws.iter_rows(values_only=True)]
+        for h, row in enumerate(rows[:40]):
+            heads = [text(v) for v in row]
+            if not (any("รายการ" in t for t in heads) and any("ราคา" in t for t in heads)):
+                continue
+            roles = header_roles(heads, spec)
+            start = h + 1
+            if _missing_roles(roles, spec) and h + 1 < len(rows):     # header written over two rows
+                two = [f"{a} {text(b)}" for a, b in zip(heads, rows[h + 1] + [None] * len(heads))]
+                if not _missing_roles(header_roles(two, spec), spec):
+                    roles, start = header_roles(two, spec), h + 2
+            missing = _missing_roles(roles, spec)
+            if missing:
+                problem = "หาคอลัมน์ " + ", ".join(missing) + " ในหัวตารางไม่เจอ"
+                continue
+            col = {role: i for i, role in roles.items()}
+            items = []
+            for r in rows[start:]:
+                r = r + [None] * (len(heads) - len(r))
+                name = text(r[col["name"]])
+                if not name:
+                    continue
+                items.append(_item(text(r[col["no"]]) if "no" in col else "", name, text(r[col["unit"]]),
+                                   {lab: price(r[col[lab]]) for lab, _ in spec["prices"]}))
+            if items:
+                return {"items": items, "method": "excel", "notes": []}
+    raise ReadError(problem)
+
+
+def read_price_file(data: bytes, filename: str, spec: dict, progress=None) -> dict:
+    """PDF or Excel, by the file name."""
+    if filename.lower().endswith((".xlsx", ".xlsm")):
+        return read_price_excel(data, spec)
+    return read_price_pdf(data, spec, progress)
+
+
 # --------------------------------------------------------------------------- #
 # Matching
 # --------------------------------------------------------------------------- #
@@ -572,7 +637,7 @@ def match(jpr: list[dict], rw: list[dict], pairs: list[dict]) -> dict:
     """
     -> {'rows': [(jpr index | None, rw index | None, how)], 'suggest': {rw index: [(jpr index, score), ...]}}
     how: 'same' (same name) / 'saved' (confirmed pair) / '' (only in one file).
-    Rows follow the จปร order; items only in the ราชวิถี file come last, in their own order.
+    Rows follow the ราชวิถี order (the user's request); items only in the จปร file come last, in their own order.
     """
     j_of: dict[int, tuple[int, str]] = {}            # rw index -> (jpr index, how)
     used_j: set[int] = set()
@@ -619,9 +684,8 @@ def match(jpr: list[dict], rw: list[dict], pairs: list[dict]) -> dict:
                 top = sorted(top + [(i, sc)], key=lambda s: -s[1])[:3]
         suggest[r] = top
 
-    r_of = {i: (r, how) for r, (i, how) in j_of.items()}
-    rows = [(i, *r_of[i]) if i in r_of else (i, None, "") for i in range(len(jpr))]
-    rows += [(None, r, "") for r in range(len(rw)) if r not in j_of]
+    rows = [(j_of[r][0], r, j_of[r][1]) if r in j_of else (None, r, "") for r in range(len(rw))]
+    rows += [(i, None, "") for i in range(len(jpr)) if i not in used_j]
     return {"rows": rows, "suggest": suggest}
 
 

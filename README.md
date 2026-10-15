@@ -101,13 +101,14 @@ A separate page (sidebar), not linked to the PO features. Data: `stock.json`.
 A separate page (sidebar), not linked to the PO or stock features. Nothing is downloaded: the result is a table on the page.
 
 * Upload **1. ไฟล์ราคา จปร** (columns used: รายการ, หน่วย, ราคาพค, ราคาซื้อ) and **2. ไฟล์ราคากลางบ้านราชวิถี**
-  (รายการ, ราคากลาง/หน่วย, หน่วย). The columns are found from the header words on each page.
+  (รายการ, ราคากลาง/หน่วย, หน่วย), each as PDF or Excel (.xlsx). The columns are found from the header words (on each
+  page of a PDF; the header row of an Excel sheet). Excel is the most exact.
 * A PDF that holds text (e.g. printed from Google Sheets) is read directly. A **scanned** PDF (pages that are only pictures)
   is read with OCR (Tesseract, Thai), about 3 seconds a page: each page is turned upright, straightened, the table lines are
   found and every column is read on its own. Prices come out reliably; product names may have small spelling slips.
   Tesseract is installed on Streamlit Cloud by `packages.txt`; on a PC without it only text PDFs can be read.
 * The same product of both files is shown on one row, with the two files as two column groups (จปร left, ราชวิถี right).
-  Rows follow the จปร list; items only in the ราชวิถี file come last. Filter: ทั้งหมด / มีทั้ง 2 ไฟล์ / มีแค่ไฟล์ จปร /
+  Rows follow the ราชวิถี list (starting with กระชาย); items only in the จปร file come last. Filter: ทั้งหมด / มีทั้ง 2 ไฟล์ / มีแค่ไฟล์ จปร /
   มีแค่ไฟล์ราชวิถี, plus a search box. An orange หน่วย cell means the two files use different units.
 * Names that are the same (ignoring spaces) are paired automatically. Names that are only similar are listed in
   **🔗 ยืนยันชื่อที่สะกดต่างกัน** with the closest จปร name filled in: tick ✔ ยืนยัน (or pick another name) and press
