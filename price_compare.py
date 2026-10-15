@@ -637,7 +637,7 @@ def match(jpr: list[dict], rw: list[dict], pairs: list[dict]) -> dict:
     """
     -> {'rows': [(jpr index | None, rw index | None, how)], 'suggest': {rw index: [(jpr index, score), ...]}}
     how: 'same' (same name) / 'saved' (confirmed pair) / '' (only in one file).
-    Rows follow the จปร order; items only in the ราชวิถี file come last, in their own order.
+    Rows follow the ราชวิถี order (the user's request); items only in the จปร file come last, in their own order.
     """
     j_of: dict[int, tuple[int, str]] = {}            # rw index -> (jpr index, how)
     used_j: set[int] = set()
@@ -684,9 +684,8 @@ def match(jpr: list[dict], rw: list[dict], pairs: list[dict]) -> dict:
                 top = sorted(top + [(i, sc)], key=lambda s: -s[1])[:3]
         suggest[r] = top
 
-    r_of = {i: (r, how) for r, (i, how) in j_of.items()}
-    rows = [(i, *r_of[i]) if i in r_of else (i, None, "") for i in range(len(jpr))]
-    rows += [(None, r, "") for r in range(len(rw)) if r not in j_of]
+    rows = [(j_of[r][0], r, j_of[r][1]) if r in j_of else (None, r, "") for r in range(len(rw))]
+    rows += [(i, None, "") for i in range(len(jpr)) if i not in used_j]
     return {"rows": rows, "suggest": suggest}
 
 

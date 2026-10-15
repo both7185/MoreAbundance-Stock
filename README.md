@@ -108,7 +108,7 @@ A separate page (sidebar), not linked to the PO or stock features. Nothing is do
   found and every column is read on its own. Prices come out reliably; product names may have small spelling slips.
   Tesseract is installed on Streamlit Cloud by `packages.txt`; on a PC without it only text PDFs can be read.
 * The same product of both files is shown on one row, with the two files as two column groups (จปร left, ราชวิถี right).
-  Rows follow the จปร list; items only in the ราชวิถี file come last. Filter: ทั้งหมด / มีทั้ง 2 ไฟล์ / มีแค่ไฟล์ จปร /
+  Rows follow the ราชวิถี list (starting with กระชาย); items only in the จปร file come last. Filter: ทั้งหมด / มีทั้ง 2 ไฟล์ / มีแค่ไฟล์ จปร /
   มีแค่ไฟล์ราชวิถี, plus a search box. An orange หน่วย cell means the two files use different units.
 * Names that are the same (ignoring spaces) are paired automatically. Names that are only similar are listed in
   **🔗 ยืนยันชื่อที่สะกดต่างกัน** with the closest จปร name filled in: tick ✔ ยืนยัน (or pick another name) and press

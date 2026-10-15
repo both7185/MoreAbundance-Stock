@@ -30,13 +30,15 @@ def _flash(kind: str, text: str) -> None:
     st.session_state.setdefault("_flash", []).append((kind, text))
 
 
+# price_compare._file_mtime (set by app.py) is part of the cache keys below, so results cached by an older
+# price_compare.py are not reused after an update (Streamlit Cloud keeps the cache across a git push)
 @st.cache_data(show_spinner=False, max_entries=8)
-def _read(data: bytes, name: str, key: str) -> dict:
+def _read(data: bytes, name: str, key: str, ver: float = 0) -> dict:
     return pc.read_price_file(data, name, pc.JPR if key == "jpr" else pc.RW)
 
 
 @st.cache_data(show_spinner=False, max_entries=8)
-def _match(jpr: list[dict], rw: list[dict], pairs: list[dict]) -> dict:
+def _match(jpr: list[dict], rw: list[dict], pairs: list[dict], ver: float = 0) -> dict:
     return pc.match(jpr, rw, pairs)
 
 
@@ -45,7 +47,7 @@ def _load(up, spec: dict) -> dict | None:
         return None
     try:
         with st.spinner(f"กำลังอ่าน{spec['title']}... (PDF สแกนใช้เวลาราว 3 วินาทีต่อหน้า)"):
-            got = _read(up.getvalue(), up.name, spec["key"])
+            got = _read(up.getvalue(), up.name, spec["key"], getattr(pc, "_file_mtime", 0))
     except pc.ReadError as e:
         st.error(f"อ่านไฟล์ {up.name} ไม่ได้: {e}")
         return None
@@ -298,7 +300,7 @@ def render(show_flash=None) -> None:
         return
     jpr, rw = got_j["items"], got_r["items"]
     with st.spinner("กำลังจับคู่ชื่อสินค้า..."):
-        result = _match(jpr, rw, current_pairs())
+        result = _match(jpr, rw, current_pairs(), getattr(pc, "_file_mtime", 0))
 
     both = sum(1 for i, r, _ in result["rows"] if i is not None and r is not None)
     m1, m2, m3 = st.columns(3)
@@ -315,5 +317,5 @@ def render(show_flash=None) -> None:
                     label_visibility="collapsed")
     query = f2.text_input("ค้นหา", placeholder="ค้นหาชื่อสินค้า...", key="cmp_query", label_visibility="collapsed")
     shown = comparison_table(jpr, rw, result, show, query)
-    st.caption(f"แสดง {shown} แถว • เรียงตามลำดับในไฟล์ จปร แล้วต่อด้วยสินค้าที่มีแค่ในไฟล์ราชวิถี • "
+    st.caption(f"แสดง {shown} แถว • เรียงตามลำดับในไฟล์ราชวิถี แล้วต่อด้วยสินค้าที่มีแค่ในไฟล์ จปร • "
                "ช่องหน่วยสีส้ม = หน่วยของ 2 ไฟล์ไม่เหมือนกัน (เทียบราคาตรงๆ ไม่ได้)")
