@@ -96,6 +96,25 @@ A separate page (sidebar), not linked to the PO features. Data: `stock.json`.
   (marked ลบแล้ว), and its code is not reused while they are there.
 * Codes: ของสด M · ของแปรรูป P · ผัก V · ผลไม้ F · เครื่องปรุง I · ของแห้ง D · เครื่องดื่ม B · ของหวาน S · อื่นๆ X (e.g. `I-001`).
 
+## Price comparison page (⚖️ เทียบราคา)
+
+A separate page (sidebar), not linked to the PO or stock features. Nothing is downloaded: the result is a table on the page.
+
+* Upload **1. ไฟล์ราคา จปร** (columns used: รายการ, หน่วย, ราคาพค, ราคาซื้อ) and **2. ไฟล์ราคากลางบ้านราชวิถี**
+  (รายการ, ราคากลาง/หน่วย, หน่วย). The columns are found from the header words on each page.
+* A PDF that holds text (e.g. printed from Google Sheets) is read directly. A **scanned** PDF (pages that are only pictures)
+  is read with OCR (Tesseract, Thai), about 3 seconds a page: each page is turned upright, straightened, the table lines are
+  found and every column is read on its own. Prices come out reliably; product names may have small spelling slips.
+  Tesseract is installed on Streamlit Cloud by `packages.txt`; on a PC without it only text PDFs can be read.
+* The same product of both files is shown on one row, with the two files as two column groups (จปร left, ราชวิถี right).
+  Rows follow the จปร list; items only in the ราชวิถี file come last. Filter: ทั้งหมด / มีทั้ง 2 ไฟล์ / มีแค่ไฟล์ จปร /
+  มีแค่ไฟล์ราชวิถี, plus a search box. An orange หน่วย cell means the two files use different units.
+* Names that are the same (ignoring spaces) are paired automatically. Names that are only similar are listed in
+  **🔗 ยืนยันชื่อที่สะกดต่างกัน** with the closest จปร name filled in: tick ✔ ยืนยัน (or pick another name) and press
+  💾 บันทึกการจับคู่. Very close names (≥ 93%, no other candidate as close) come pre-ticked, to be checked before saving.
+* Confirmed pairs are remembered in `price_matches.json` (its own file in Supabase / the data branch, like the other data
+  files), so the next upload of the lists lines up without asking again. **📌 คู่ที่ยืนยันไว้แล้ว** undoes a wrong pair.
+
 ### Where the website keeps its data (Supabase, GitHub `data` branch as backup)
 
 The disk on Streamlit Cloud is temporary, so the editable data (`products.csv`, `sup_codes.json`, `stock.json`)
@@ -185,6 +204,9 @@ When running locally (`run.bat`) without secrets, the files in the folder are th
 | `sup_codes.json` | **Sup codes**: meaning of position 1 (A/C/M/S/X) and position 2 (0-9), and every shop → Sup no. Edited in the 🏷️ tab |
 | `stock.py` / `stock_page.py` | Stock page: data logic (codes, status, lots, history) / Streamlit UI |
 | `stock.json` | **Stock**: items with quantity, ขั้นต่ำ and expiry lots, plus 90 days of movements. Edited on the 📦 page |
+| `price_compare.py` / `compare_page.py` | Price comparison page: reading the price-list PDFs (text or OCR) and matching names / Streamlit UI |
+| `price_matches.json` | **Confirmed name pairs** of the price comparison page (created on first save, kept with the other data files) |
+| `packages.txt` | System packages for Streamlit Cloud: Tesseract OCR with Thai, for scanned price lists |
 
 ## Things worth knowing
 
