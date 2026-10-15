@@ -181,9 +181,6 @@ def _describe(name: str, content: bytes | None) -> str:
         if name == "sup_codes.json":
             import json
             return f"ร้าน {len(json.loads(text).get('shops', []))}"
-        if name == "price_matches.json":
-            import json
-            return f"คู่สินค้า {len(json.loads(text).get('pairs', []))}"
     except Exception:
         pass
     return f"{len(content):,} bytes"
