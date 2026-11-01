@@ -165,6 +165,7 @@ def movement_dialog(data: dict) -> None:
 
 WEEKDAYS = ("จันทร์", "อังคาร", "พุธ", "พฤหัสบดี", "ศุกร์", "เสาร์", "อาทิตย์")
 W_CODE, W_NAME, W_LOT, W_QTY, W_UNIT = "รหัส", "สินค้า", "ล็อต (วันหมดอายุ)", "จำนวน", "หน่วย"
+W_AFTER = "คงเหลือหลังเบิก"
 
 
 def day_label(iso: str) -> str:
@@ -250,6 +251,19 @@ def _current_lines(draft: list[dict], key: str) -> list[dict]:
         qty = edits.get(i, {}).get(W_QTY, line["qty"])
         out.append({**line, "qty": stock.num(qty) if qty is not None else 0})
     return out
+
+
+def _commit_list(key: str) -> None:
+    """Table edited: move the edits into the draft and redraw, so คงเหลือหลังเบิก follows the new จำนวน."""
+    st.session_state["wd_draft"] = _current_lines(st.session_state.get("wd_draft") or [], key)
+    _new_list_version()
+
+
+def _after_box(label: str, value: str, color: str) -> str:
+    """A read-only box that looks like an input, for the คงเหลือหลังเบิก number next to จำนวน."""
+    return (f"<div style='font-size:0.875rem;margin-bottom:0.25rem'>{label}</div>"
+            f"<div style='border:1px solid rgba(128,128,128,0.35);border-radius:0.5rem;padding:0.4rem 0.75rem;"
+            f"min-height:2.5rem;box-sizing:border-box;margin-bottom:1rem;font-weight:700;color:{color};white-space:nowrap'>{value}</div>")
 
 
 def _same(a: list[dict], b: list[dict]) -> bool:
@@ -340,7 +354,7 @@ def sheet_editor(data: dict, on: str, place: str) -> None:
 
     # ---- add a line: item -> lot (earliest expiry first) -> จำนวน
     st.markdown("**➕ เพิ่มสินค้าที่จะเบิก**")
-    c_item, c_lot, c_qty, c_add = st.columns([2.2, 2.3, 1, 0.8], vertical_alignment="bottom")
+    c_item, c_lot, c_qty, c_after, c_add = st.columns([2, 2.1, 1, 1.1, 0.8], vertical_alignment="bottom")
     code = c_item.selectbox("สินค้า", list(items), index=None, format_func=lambda c: item_label(items[c]),
                             placeholder="พิมพ์ชื่อสินค้าหรือรหัส", key=f"wd_item_{ver}")
     lot, qty, left = None, 0.0, {}
@@ -367,14 +381,20 @@ def sheet_editor(data: dict, on: str, place: str) -> None:
             qty = c_qty.number_input(f"จำนวน {unit}".strip(), min_value=0.0, max_value=float(left[lot]),
                                      value=float(min(1, left[lot])), step=1.0, format="%g",
                                      key=f"wd_qty_{ver}_{code}_{lot}")
+            after = stock.num(sum(left.values()) - qty)      # whole item, all lots, after this sheet + this line
+            c_after.markdown(_after_box("คงเหลือหลังเบิก", f"{fmt_num(after)} {unit}".strip(),
+                                        COLORS[stock.status({**item, "qty": after})][0]), unsafe_allow_html=True)
         else:
             c_lot.selectbox("ล็อต (วันหมดอายุ)", [], placeholder="หมดสต็อก — ไม่มีของให้เบิก", disabled=True,
                             key=f"wd_lot_none_{ver}")
             c_qty.number_input("จำนวน", value=0.0, disabled=True, key=f"wd_qty_none_{ver}")
+            c_after.markdown(_after_box("คงเหลือหลังเบิก", f"0 {unit}".strip(), COLORS[OUT][0]),
+                             unsafe_allow_html=True)
     else:
         c_lot.selectbox("ล็อต (วันหมดอายุ)", [], placeholder="เลือกสินค้าก่อน", disabled=True,
                         key=f"wd_lot_none_{ver}")
         c_qty.number_input("จำนวน", value=0.0, disabled=True, key=f"wd_qty_none_{ver}")
+        c_after.markdown(_after_box("คงเหลือหลังเบิก", "–", "#999"), unsafe_allow_html=True)
     if c_add.button("➕ เพิ่ม", key=f"wd_add_{ver}", disabled=lot is None or qty <= 0, width="stretch"):
         new = [dict(l) for l in lines]
         same = next((l for l in new if l["code"] == code and l["exp"] == lot), None)
@@ -393,19 +413,27 @@ def sheet_editor(data: dict, on: str, place: str) -> None:
     else:
         def name_of(c: str) -> str:
             return items[c]["name"] if c in items else f"{old_names.get(c, {}).get('name', '')} (ลบแล้ว)".lstrip()
+        avail = {c: sum(stock.lots_for_sheet(data, on, c, place).values()) for c in {l["code"] for l in draft}}
+        in_sheet: dict[str, float] = {}
+        for l in draft:
+            in_sheet[l["code"]] = stock.num(in_sheet.get(l["code"], 0) + l["qty"])
         df = pd.DataFrame([{
             W_CODE: l["code"], W_NAME: name_of(l["code"]), W_LOT: lot_label(l["exp"]), W_QTY: float(l["qty"]),
+            W_AFTER: float(stock.num(avail[l["code"]] - in_sheet[l["code"]])) if l["code"] in items else None,
             W_UNIT: items[l["code"]]["unit"] if l["code"] in items else old_names.get(l["code"], {}).get("unit", ""),
         } for l in draft])
         st.data_editor(
             df, num_rows="delete", hide_index=True, width="stretch", key=list_key,
-            disabled=[W_CODE, W_NAME, W_LOT, W_UNIT],
+            on_change=_commit_list, args=(list_key,),
+            disabled=[W_CODE, W_NAME, W_LOT, W_AFTER, W_UNIT],
             column_config={
                 W_CODE: st.column_config.TextColumn(width=70),
                 W_NAME: st.column_config.TextColumn(width=230),
                 W_LOT: st.column_config.TextColumn(width=140),
                 W_QTY: st.column_config.NumberColumn(min_value=0, required=True, format="localized", width=90,
                                                      help="แก้จำนวนได้ในตาราง"),
+                W_AFTER: st.column_config.NumberColumn(format="localized", width=120,
+                                                       help="ยอดรวมทุกล็อตของสินค้านี้ ที่จะเหลือหลังบันทึกใบเบิกนี้"),
                 W_UNIT: st.column_config.TextColumn(width=70),
             },
         )
