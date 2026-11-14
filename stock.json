@@ -778,7 +778,7 @@
    "name": "น้ำแดง Hale's Blue Boy สีแดง",
    "category": "เครื่องดื่ม",
    "unit": "ขวด",
-   "qty": 2,
+   "qty": 14,
    "min": 0,
    "lots": []
   },
@@ -9182,6 +9182,18 @@
      "qty": 1
     }
    ]
+  },
+  {
+   "id": "74bc4f92001c",
+   "code": "B-004",
+   "date": "2026-11-14",
+   "in": 12,
+   "out": 0,
+   "before": 2,
+   "count": 2,
+   "after": 14,
+   "exp": "",
+   "saved_at": "2026-11-14 17:42"
   }
  ],
  "withdrawals": [
