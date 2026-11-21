@@ -178,6 +178,26 @@ Setup (once):
 
 When running locally (`run.bat`) without secrets, the files in the folder are the data.
 
+## Bill matching page (🔗 จับคู่บิล)
+
+Pairs each transfer slip (Electronic bill from K PLUS / Krungsri ...) with the photo of its handwritten bill,
+and makes a PDF of them. Nothing is saved: the pictures stay in memory while the page is open.
+
+1. Upload the slips in box 1 and the handwritten bills (or receipts, POS screens, chat screenshots) in box 2.
+   Pictures (jpg/png/webp) or `.zip` files, any number, in file-name order (`_2` before `_10`).
+2. **① ยอดเงินในบิลโอน**: each slip's amount is read by Tesseract OCR (roughly 10-30 s for 40 slips; Tesseract comes from
+   `packages.txt`). ⚠️ marks a read that was not clear-cut. Every amount can be corrected in its box.
+   Without Tesseract (e.g. a `run.bat` PC) the boxes start empty and are typed by hand.
+3. **② ใส่ราคาของบิลเขียนมือ**: type the total of each handwritten bill under its picture, then press 🔗 จับคู่บิล.
+   A bill that is not needed can stay empty.
+4. **③ ผลการจับคู่**: a price equal to one slip's amount is paired automatically. When an amount has several slips
+   and/or bills (e.g. two 500.00 transfers), the pictures are shown side by side and the user picks the slip
+   (ก, ข, ...) for each bill; when only one choice is left it is filled in. Bills whose price matches no slip are listed
+   so the typed price can be checked.
+5. **④ ดาวน์โหลด PDF**: A4 portrait, like the Canva files. First every slip without a bill, one per page and centred,
+   then one page per pair with the bill top-left and the slip bottom-right (as large as fits without covering each
+   other). Both groups follow the slip upload order. A tick box adds the unpaired bills at the end.
+
 ## Stack
 
 | Layer | Choice | Why |
@@ -205,7 +225,8 @@ When running locally (`run.bat`) without secrets, the files in the folder are th
 | `stock.py` / `stock_page.py` | Stock page: data logic (codes, status, lots, history) / Streamlit UI |
 | `stock.json` | **Stock**: items with quantity, ขั้นต่ำ and expiry lots, plus 90 days of movements. Edited on the 📦 page |
 | `price_compare.py` / `compare_page.py` | Price comparison page: reading the price-list PDFs (text or OCR) and matching names / Streamlit UI |
-| `packages.txt` | System packages for Streamlit Cloud: Tesseract OCR with Thai, for scanned price lists |
+| `bill_match.py` / `bill_match_page.py` | Bill matching page: reading slip amounts (OCR), pairing, building the PDF / Streamlit UI |
+| `packages.txt` | System packages for Streamlit Cloud: Tesseract OCR with Thai, for scanned price lists and slip amounts |
 
 ## Things worth knowing
 
