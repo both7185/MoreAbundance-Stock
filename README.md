@@ -185,7 +185,9 @@ and makes a PDF of them. Nothing is saved: the pictures stay in memory while the
 Every picture on the page can be clicked to see it large (click again or ✕ to close).
 
 1. Upload **all** pictures in one box: slips and handwritten bills mixed (receipts, POS screens and chat screenshots
-   count as bills). Pictures (jpg/png/webp) or `.zip` files, any number, in file-name order (`_2` before `_10`).
+   count as bills). Pictures (jpg/png/webp) or `.zip` files (also zips inside the zip), any number, in file-name
+   order (`_2` before `_10`).
+   A second, optional box takes **order files** (PDF, e.g. `16-11.pdf`, `16-11.1.pdf`): see step 7.
 2. Every picture is read once by **RapidOCR** (PP-OCR models on onnxruntime, in `requirements.txt`; it also reads
    handwritten digits), about 1-2 s a picture on Streamlit Cloud. Without it the page falls back to Tesseract
    (`packages.txt`), which reads handwriting poorly.
@@ -193,17 +195,29 @@ Every picture on the page can be clicked to see it large (click again or ✕ to 
      amount on it. Everything else is a **bill**.
    * A bill's amount is the largest number on it that equals a slip amount. If none does, a number one digit away
      from exactly one slip amount is used and marked ⚠️ เดา. Otherwise it stays empty for the user to type.
-   * On the user's two sets: all 102 pictures were sorted right, all 61 slip amounts were right, and 33 of 39 bill
-     amounts were found.
+   * On the user's three sets: all 160 pictures were sorted right, all 92 slip amounts were right, and about 80% of
+     the bill amounts were found.
 3. **① รอยืนยัน**: a bill and the one slip with the same amount, side by side. ✅ ยืนยัน (or ✅ ยืนยันทั้งหมด) moves
-   them to ③. ✖ ไม่ใช่ keeps that pair from being suggested again. When an amount has several slips, the bill is
-   shown with all of them (ก, ข, ...) to pick one.
-4. **② ยังไม่มีคู่**: bills with no matching slip (fix the amount, or pick a slip by hand) and slips with no bill.
-   ↔ switches a picture between slip and bill when it was sorted wrong.
-5. **③ จับคู่แล้ว**: confirmed pairs. The slip can be changed in the dropdown, or ↩️ ยกเลิกคู่ sends both back to ②.
-6. **④ ดาวน์โหลด PDF**: A4 portrait, like the Canva files. First every slip without a confirmed bill, one per page
-   and centred, then one page per confirmed pair with the bill top-left and the slip bottom-right (as large as fits
-   without covering each other). Both groups follow the slip upload order. A tick box adds the unpaired bills at the end.
+   them to ③. ✖ ไม่ใช่ only stops that pair from being suggested again; ↩️ ยกเลิก ✖ ไม่ใช่ brings them all back.
+   When an amount has several slips, the bill is shown with all of them (ก, ข, ...) to pick one.
+4. **② ยังไม่มีคู่**: bills with no matching slip (fix the amount, or pick a slip by hand) and slips with no bill
+   (pick a bill by hand). The hand-pick lists **every** slip / bill, also ones rejected with ✖ and ones already
+   paired (they move to the new pair). ↔ switches a picture between slip and bill when it was sorted wrong.
+5. **③ จับคู่แล้ว**: confirmed pairs. The slip can be changed to any slip in the dropdown, or ↩️ ยกเลิกคู่ sends both
+   back to ②.
+6. **④ ดาวน์โหลด PDF** (no order files): A4 portrait, like the Canva files. First every slip without a confirmed bill,
+   one per page and centred, then one page per confirmed pair. Both groups follow the slip upload order. A tick box
+   adds the unpaired bills at the end.
+   On a pair page the bill is top-left and the slip bottom-right, **never covering each other**: the page is split
+   side by side or top/bottom where the two pictures come out largest (`pair_layout`).
+7. **Order files** (the ใบรับรองแทนใบเสร็จ PDFs made in Google Sheets; text PDFs, not scans): each file's lines
+   (name + amount, down to the รวม row) are read, and each confirmed pair / lone slip is put on the line with its
+   amount. Every order file gets **its own PDF**, with the receipts in the file's line order.
+   * An amount found in several files (or more receipts than lines with that amount) is shown with its pictures
+     and a ⚠️ เลือกไฟล์ dropdown; receipts whose amount is in no file can be added to a file by hand (they go last).
+   * Lines with no receipt are listed (❌ in each file's table).
+   * Each output's name starts as the uploaded file's name and can be edited. One button per file, plus a .zip of
+     all. A tick box puts the order file's own pages in front.
 
 ## Stack
 
@@ -232,7 +246,7 @@ Every picture on the page can be clicked to see it large (click again or ✕ to 
 | `stock.py` / `stock_page.py` | Stock page: data logic (codes, status, lots, history) / Streamlit UI |
 | `stock.json` | **Stock**: items with quantity, ขั้นต่ำ and expiry lots, plus 90 days of movements. Edited on the 📦 page |
 | `price_compare.py` / `compare_page.py` | Price comparison page: reading the price-list PDFs (text or OCR) and matching names / Streamlit UI |
-| `bill_match.py` / `bill_match_page.py` | Bill matching page: sorting and reading the pictures (RapidOCR), suggesting pairs, building the PDF / Streamlit UI |
+| `bill_match.py` / `bill_match_page.py` | Bill matching page: sorting and reading the pictures (RapidOCR), suggesting pairs, reading order files, building the PDFs / Streamlit UI |
 | `packages.txt` | System packages for Streamlit Cloud: Tesseract OCR with Thai, for scanned price lists (and the bill page when RapidOCR is missing) |
 
 ## Things worth knowing

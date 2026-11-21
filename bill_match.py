@@ -14,7 +14,12 @@
   confirmed pairs stay editable on the page.
 * build_pdf(): A4 portrait (595.5 x 842.25 pt, like the user's Canva files). A slip without a handwritten bill
   gets a page of its own (centred); a pair gets the handwritten bill top-left and the slip bottom-right.
-  The two are as big as fits without covering each other. Unpaired slips come first, then the pairs, each in upload order.
+  The two are as big as fits without covering each other (side by side or one above the other).
+  Without order files: unpaired slips come first, then the pairs, each in upload order.
+* Order files (optional, e.g. 16-11.pdf, the ใบรับรองแทนใบเสร็จ made in Google Sheets): parse_order_pdf() reads
+  their expense lines; plan_by_files() puts each pair / slip on the line with its amount, so every order file gets a
+  PDF of its own with the receipts in the file's order. An amount found in several files is left for the user to
+  choose.
 
 Nothing is saved anywhere.
 """
@@ -60,24 +65,32 @@ def collect_images(files: list[tuple[str, bytes]]) -> tuple[list[dict], list[str
     """[(name, data)] of uploads (images or zips) -> ([{id, name, data}], notes). Same picture twice is kept once."""
     found: list[tuple[str, bytes]] = []
     notes: list[str] = []
+
+    def from_zip(name: str, data: bytes, depth: int = 0) -> None:
+        try:
+            zf = zipfile.ZipFile(io.BytesIO(data))
+        except zipfile.BadZipFile:
+            notes.append(f"เปิดไฟล์ zip {name} ไม่ได้")
+            return
+        inner, zips = [], []
+        for info in zf.infolist():
+            n = _zip_name(info)
+            base = n.rsplit("/", 1)[-1]
+            if info.is_dir() or "__MACOSX" in n or base.startswith("."):
+                continue
+            if base.lower().endswith(IMAGE_EXT):
+                inner.append((base, zf.read(info)))
+            elif base.lower().endswith(".zip") and depth < 3:     # a zip inside the zip
+                zips.append((base, zf.read(info)))
+        if not inner and not zips:
+            notes.append(f"ใน {name} ไม่มีไฟล์รูป")
+        found.extend(sorted(inner, key=lambda x: natural_key(x[0])))
+        for zname, zdata in sorted(zips, key=lambda x: natural_key(x[0])):
+            from_zip(zname, zdata, depth + 1)
+
     for name, data in files:
         if name.lower().endswith(".zip"):
-            try:
-                zf = zipfile.ZipFile(io.BytesIO(data))
-            except zipfile.BadZipFile:
-                notes.append(f"เปิดไฟล์ zip {name} ไม่ได้")
-                continue
-            inner = []
-            for info in zf.infolist():
-                n = _zip_name(info)
-                base = n.rsplit("/", 1)[-1]
-                if info.is_dir() or "__MACOSX" in n or base.startswith("."):
-                    continue
-                if base.lower().endswith(IMAGE_EXT):
-                    inner.append((base, zf.read(info)))
-            if not inner:
-                notes.append(f"ใน {name} ไม่มีไฟล์รูป")
-            found.extend(sorted(inner, key=lambda x: natural_key(x[0])))
+            from_zip(name, data)
         elif name.lower().endswith(IMAGE_EXT):
             found.append((name, data))
     out, seen = [], set()
@@ -387,13 +400,160 @@ def suggest(slips: dict[str, float | None], bills: dict[str, float | None], conf
 
 
 # --------------------------------------------------------------------------- #
+# Order files (ใบปะหน้า / ใบรับรองแทนใบเสร็จ): one output PDF per file, receipts in the file's order
+# --------------------------------------------------------------------------- #
+_MONEY_WORD = re.compile(r"^\d{1,3}(?:,\d{3})*\.\d{2}$|^\d+\.\d{2}$")
+_DATE_WORD = re.compile(r"^\d{1,2}/\d{1,2}/\d{2,4}$")
+
+
+def parse_order_pdf(data: bytes) -> dict:
+    """The expense lines of a text PDF (e.g. the Google Sheets ใบรับรองแทนใบเสร็จรับเงิน):
+    {'lines': [{'name', 'amount'}] in the file's order, 'total': float | None, 'note': str}.
+    A line is a money amount (2,200.00) with the words to its left on the same row; the รวม row and below are skipped."""
+    import pymupdf
+
+    lines, total, note = [], None, ""
+    try:
+        doc = pymupdf.open(stream=data, filetype="pdf")
+    except Exception as e:
+        return {"lines": [], "total": None, "note": f"เปิดไฟล์ไม่ได้ ({e})"}
+    for page in doc:
+        words = [w for w in page.get_text("words") if w[4].strip()]
+        stop = None
+        for w in words:
+            if w[4].startswith("รวม"):
+                stop = min(stop or w[1], w[1])
+        for w in sorted(words, key=lambda w: (round(w[1]), w[0])):
+            if not _MONEY_WORD.match(w[4]):
+                continue
+            mid = (w[1] + w[3]) / 2
+            if stop is not None and w[1] >= stop - 2:
+                if total is None and abs(w[1] - stop) < 6:
+                    total = float(w[4].replace(",", ""))
+                continue
+            name_words = [v for v in words if v is not w and abs((v[1] + v[3]) / 2 - mid) < 6 and v[2] <= w[0] + 1
+                          and not _MONEY_WORD.match(v[4]) and not _DATE_WORD.match(v[4]) and v[4] != "รอบส่ง"]
+            name = " ".join(v[4] for v in sorted(name_words, key=lambda v: v[0]))
+            lines.append({"name": name, "amount": float(w[4].replace(",", ""))})
+    if not lines:
+        note = "ไม่พบรายการที่มีจำนวนเงินในไฟล์ (ต้องเป็น PDF ที่มีข้อความ ไม่ใช่รูปสแกน)"
+    elif total is not None and abs(sum(l["amount"] for l in lines) - total) > 0.01:
+        note = f"ยอดรวมของรายการ ({sum(l['amount'] for l in lines):,.2f}) ไม่เท่ากับรวมทั้งสิ้นในไฟล์ ({total:,.2f})"
+    return {"lines": lines, "total": total, "note": note}
+
+
+def order_units(slips: dict[str, float | None], bills: dict[str, float | None],
+                pairs: list[tuple[str, str]]) -> list[dict]:
+    """What goes on the pages, in slip upload order: a confirmed pair, a slip alone, or a bill alone
+    -> [{'id', 'amount', 'page'}]. Bills alone come last."""
+    paired_s = {s: b for b, s in pairs}
+    paired_b = set(paired_s.values())
+    units = []
+    for s, a in slips.items():
+        if s in paired_s:
+            units.append({"id": s, "amount": a, "page": ("pair", paired_s[s], s)})
+        else:
+            units.append({"id": s, "amount": a, "page": ("slip", s)})
+    for b, a in bills.items():
+        if b not in paired_b:
+            units.append({"id": b, "amount": a, "page": ("bill", b)})
+    return units
+
+
+def plan_by_files(units: list[dict], files: list[dict], chosen: dict[str, str | None] | None = None) -> dict:
+    """Spread the units over the order files by amount.
+
+    units from order_units(); files [{'key', 'lines': [{'name', 'amount'}]}]; chosen {unit_id: file key, or '' for
+    none} — the user's answers (they win over the automatic choice).
+    A unit goes to the file whose line has its amount. Bills alone only stand in for an amount no slip has.
+    When an amount is in several files, or there are more units than lines for it, the user is asked.
+
+    -> {'pages': {key: [page]} in line order (units placed by hand without a line go last),
+        'missing': {key: [line]} lines no unit fills, 'rows': {key: [{'name', 'amount', 'unit'}]} each line with the
+        unit on it (name None: a unit placed by hand without a line), 'ask': [(unit_id, [file keys])] still to be answered,
+        'options': {unit_id: [file keys]} for every asked unit, 'unused': [unit_id] in no file}"""
+    chosen = chosen or {}
+    slip_amounts = {round(u["amount"], 2) for u in units if u["page"][0] != "bill" and u["amount"] is not None}
+    lines_at: dict[float, list[str]] = {}
+    for f in files:
+        for ln in f["lines"]:
+            lines_at.setdefault(round(ln["amount"], 2), []).append(f["key"])
+    by_amount: dict[float, list[dict]] = {}
+    for u in units:
+        if u["amount"] is None:
+            continue
+        a = round(u["amount"], 2)
+        if u["page"][0] == "bill" and a in slip_amounts:
+            continue                          # a bill alone never takes a slip's line
+        by_amount.setdefault(a, []).append(u)
+
+    target: dict[str, str] = {}
+    options: dict[str, list[str]] = {}
+    for a, us in by_amount.items():
+        keys = lines_at.get(a, [])
+        if not keys:
+            continue
+        distinct = list(dict.fromkeys(keys))
+        if len(distinct) == 1 and len(us) <= len(keys):
+            for u in us:
+                target[u["id"]] = distinct[0]
+        else:
+            for u in us:
+                options[u["id"]] = distinct
+    ask = []
+    for u in units:
+        c = chosen.get(u["id"])
+        if c is not None:
+            if c:
+                target[u["id"]] = c
+            else:
+                target.pop(u["id"], None)
+        elif u["id"] in options:
+            ask.append((u["id"], options[u["id"]]))
+
+    pages: dict[str, list] = {}
+    missing: dict[str, list] = {}
+    rows: dict[str, list] = {}
+    unit_by_id = {u["id"]: u for u in units}
+    for f in files:
+        mine = [unit_by_id[i] for i in unit_by_id if target.get(i) == f["key"]]
+        used: set[str] = set()
+        out, miss, rw = [], [], []
+        for ln in f["lines"]:
+            hit = next((u for u in mine if u["id"] not in used and u["amount"] is not None
+                        and round(u["amount"], 2) == round(ln["amount"], 2)), None)
+            if hit:
+                used.add(hit["id"])
+                out.append(hit["page"])
+            else:
+                miss.append(ln)
+            rw.append({"name": ln["name"], "amount": ln["amount"], "unit": hit["id"] if hit else None})
+        for u in mine:
+            if u["id"] not in used:
+                out.append(u["page"])
+                rw.append({"name": None, "amount": u["amount"], "unit": u["id"]})
+        pages[f["key"]] = out
+        missing[f["key"]] = miss
+        rows[f["key"]] = rw
+    unused = [u["id"] for u in units if u["id"] not in target and u["id"] not in dict(ask)]
+    return {"pages": pages, "missing": missing, "rows": rows, "ask": ask, "options": options, "unused": unused}
+
+
+def with_cover(cover: bytes, body: bytes) -> bytes:
+    """The order file's own pages first, then the receipts."""
+    import pymupdf
+
+    out = pymupdf.open(stream=cover, filetype="pdf")
+    out.insert_pdf(pymupdf.open(stream=body, filetype="pdf"))
+    return out.tobytes(garbage=3, deflate=True)
+
+
+# --------------------------------------------------------------------------- #
 # PDF
 # --------------------------------------------------------------------------- #
 PAGE_W, PAGE_H = 595.5, 842.25       # A4 in points, as the user's Canva PDFs
 SINGLE_BOX = (70, 55, 525.5, 787)    # slip alone: centred in this box
-BILL_MAX = (20, 20, 420, 580)        # handwritten bill: from the top-left corner, at most this box
-SLIP_MAX = (215, 262, 575, 822)      # slip next to a bill: from the bottom-right corner, at most this box
-OVERLAP = 25                         # the slip may cover this much of the bill's edge (photos have margins)
+MARGIN, GAP = 18, 10                 # pair pages: page margin and the space between the two pictures
 
 
 def _fit(size: tuple[int, int], box: tuple[float, float, float, float], anchor: str) -> tuple[float, float, float, float]:
@@ -410,18 +570,26 @@ def _fit(size: tuple[int, int], box: tuple[float, float, float, float], anchor: 
 
 
 def pair_layout(bill_size: tuple[int, int], slip_size: tuple[int, int]) -> tuple[tuple, tuple]:
-    """(x, y, w, h) of the bill (top-left) and the slip (bottom-right): as big as possible while they sit
-    side by side or one above the other (overlapping at most OVERLAP points)."""
-    bx, by, bw, bh = _fit(bill_size, BILL_MAX, "top-left")
-    sx, sy, sw, sh = _fit(slip_size, SLIP_MAX, "bottom-right")
-    right, bottom = SLIP_MAX[2], SLIP_MAX[3]
-    # shrink both by f until bill.right <= slip.left (+OVERLAP) or bill.bottom <= slip.top (+OVERLAP)
-    f_side = (right - bx + OVERLAP) / (bw + sw)
-    f_stack = (bottom - by + OVERLAP) / (bh + sh)
-    f = min(1.0, max(f_side, f_stack))
-    bill = (bx, by, bw * f, bh * f)
-    slip = (right - sw * f, bottom - sh * f, sw * f, sh * f)
-    return bill, slip
+    """(x, y, w, h) of the bill (top-left) and the slip (bottom-right), never covering each other: the page is split
+    side by side or top/bottom, at the split where the two pictures are largest together (the product of their
+    areas, so neither ends up tiny)."""
+    x0, y0, x1, y1 = MARGIN, MARGIN, PAGE_W - MARGIN, PAGE_H - MARGIN
+    best = None
+    for split in range(20, 81):
+        t = split / 100
+        for side in (True, False):
+            if side:
+                cut = x0 + (x1 - x0 - GAP) * t
+                rb = _fit(bill_size, (x0, y0, cut, y1), "top-left")
+                rs = _fit(slip_size, (cut + GAP, y0, x1, y1), "bottom-right")
+            else:
+                cut = y0 + (y1 - y0 - GAP) * t
+                rb = _fit(bill_size, (x0, y0, x1, cut), "top-left")
+                rs = _fit(slip_size, (x0, cut + GAP, x1, y1), "bottom-right")
+            score = rb[2] * rb[3] * rs[2] * rs[3]       # product of the two areas: big, and balanced
+            if best is None or score > best[0]:
+                best = (score, rb, rs)
+    return best[1], best[2]
 
 
 def page_plan(slip_ids: list[str], pairs: list[tuple[str, str]], extra_bills: list[str] = ()) -> list[tuple]:
@@ -465,5 +633,5 @@ def build_pdf(pages: list[tuple], images: dict[str, bytes], longest: int = 1400)
             _, bill, slip = page
             rb, rs = pair_layout(pic(bill)[1], pic(slip)[1])
             place(bill, rb)
-            place(slip, rs, frame=True)   # on top, with a thin grey edge where it meets the bill
+            place(slip, rs, frame=True)   # thin grey edge: the white slip stays visible on white paper
     return bytes(pdf.output())
