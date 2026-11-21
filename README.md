@@ -182,21 +182,28 @@ When running locally (`run.bat`) without secrets, the files in the folder are th
 
 Pairs each transfer slip (Electronic bill from K PLUS / Krungsri ...) with the photo of its handwritten bill,
 and makes a PDF of them. Nothing is saved: the pictures stay in memory while the page is open.
+Every picture on the page can be clicked to see it large (click again or ✕ to close).
 
-1. Upload the slips in box 1 and the handwritten bills (or receipts, POS screens, chat screenshots) in box 2.
-   Pictures (jpg/png/webp) or `.zip` files, any number, in file-name order (`_2` before `_10`).
-2. **① ยอดเงินในบิลโอน**: each slip's amount is read by Tesseract OCR (roughly 10-30 s for 40 slips; Tesseract comes from
-   `packages.txt`). ⚠️ marks a read that was not clear-cut. Every amount can be corrected in its box.
-   Without Tesseract (e.g. a `run.bat` PC) the boxes start empty and are typed by hand.
-3. **② ใส่ราคาของบิลเขียนมือ**: type the total of each handwritten bill under its picture, then press 🔗 จับคู่บิล.
-   A bill that is not needed can stay empty.
-4. **③ ผลการจับคู่**: a price equal to one slip's amount is paired automatically. When an amount has several slips
-   and/or bills (e.g. two 500.00 transfers), the pictures are shown side by side and the user picks the slip
-   (ก, ข, ...) for each bill; when only one choice is left it is filled in. Bills whose price matches no slip are listed
-   so the typed price can be checked.
-5. **④ ดาวน์โหลด PDF**: A4 portrait, like the Canva files. First every slip without a bill, one per page and centred,
-   then one page per pair with the bill top-left and the slip bottom-right (as large as fits without covering each
-   other). Both groups follow the slip upload order. A tick box adds the unpaired bills at the end.
+1. Upload **all** pictures in one box: slips and handwritten bills mixed (receipts, POS screens and chat screenshots
+   count as bills). Pictures (jpg/png/webp) or `.zip` files, any number, in file-name order (`_2` before `_10`).
+2. Every picture is read once by **RapidOCR** (PP-OCR models on onnxruntime, in `requirements.txt`; it also reads
+   handwritten digits), about 1-2 s a picture on Streamlit Cloud. Without it the page falls back to Tesseract
+   (`packages.txt`), which reads handwriting poorly.
+   * A picture with a masked account number (`xxx-x-x9503-x`) and an amount is a **slip**; its amount is the first
+     amount on it. Everything else is a **bill**.
+   * A bill's amount is the largest number on it that equals a slip amount. If none does, a number one digit away
+     from exactly one slip amount is used and marked ⚠️ เดา. Otherwise it stays empty for the user to type.
+   * On the user's two sets: all 102 pictures were sorted right, all 61 slip amounts were right, and 33 of 39 bill
+     amounts were found.
+3. **① รอยืนยัน**: a bill and the one slip with the same amount, side by side. ✅ ยืนยัน (or ✅ ยืนยันทั้งหมด) moves
+   them to ③. ✖ ไม่ใช่ keeps that pair from being suggested again. When an amount has several slips, the bill is
+   shown with all of them (ก, ข, ...) to pick one.
+4. **② ยังไม่มีคู่**: bills with no matching slip (fix the amount, or pick a slip by hand) and slips with no bill.
+   ↔ switches a picture between slip and bill when it was sorted wrong.
+5. **③ จับคู่แล้ว**: confirmed pairs. The slip can be changed in the dropdown, or ↩️ ยกเลิกคู่ sends both back to ②.
+6. **④ ดาวน์โหลด PDF**: A4 portrait, like the Canva files. First every slip without a confirmed bill, one per page
+   and centred, then one page per confirmed pair with the bill top-left and the slip bottom-right (as large as fits
+   without covering each other). Both groups follow the slip upload order. A tick box adds the unpaired bills at the end.
 
 ## Stack
 
@@ -225,8 +232,8 @@ and makes a PDF of them. Nothing is saved: the pictures stay in memory while the
 | `stock.py` / `stock_page.py` | Stock page: data logic (codes, status, lots, history) / Streamlit UI |
 | `stock.json` | **Stock**: items with quantity, ขั้นต่ำ and expiry lots, plus 90 days of movements. Edited on the 📦 page |
 | `price_compare.py` / `compare_page.py` | Price comparison page: reading the price-list PDFs (text or OCR) and matching names / Streamlit UI |
-| `bill_match.py` / `bill_match_page.py` | Bill matching page: reading slip amounts (OCR), pairing, building the PDF / Streamlit UI |
-| `packages.txt` | System packages for Streamlit Cloud: Tesseract OCR with Thai, for scanned price lists and slip amounts |
+| `bill_match.py` / `bill_match_page.py` | Bill matching page: sorting and reading the pictures (RapidOCR), suggesting pairs, building the PDF / Streamlit UI |
+| `packages.txt` | System packages for Streamlit Cloud: Tesseract OCR with Thai, for scanned price lists (and the bill page when RapidOCR is missing) |
 
 ## Things worth knowing
 
