@@ -1,12 +1,17 @@
 """
 จับคู่บิลโอนเงิน (Electronic bill / สลิปโอนเงิน) กับบิลเขียนมือ — the logic behind bill_match_page.py.
 
-* Images come from uploaded picture files or .zip files (any folder depth), in natural file-name order.
-* The amount of each transfer slip is read by Tesseract OCR (K PLUS green slips, Krungsri yellow slips, ...);
-  the user can correct it on screen. Without Tesseract the amounts are typed by hand.
-* The user types the price of each handwritten bill. A price equal to exactly one slip amount (and no other
-  handwritten bill with that price) is paired automatically; amounts shared by several slips and/or bills are
-  returned as "duplicates" for the user to pick.
+* All pictures come in one upload (pictures and/or .zip files, any folder depth), in natural file-name order.
+* analyze() reads every picture once with RapidOCR (PP-OCR, onnxruntime; it also reads handwritten digits) or,
+  when that is not installed, with Tesseract:
+    - a picture with a masked account number (xxx-x-x9503-x) and a money amount is a transfer slip; its amount is
+      the first amount on it (5,082.00).
+    - anything else is a handwritten bill / receipt; all numbers on it are kept. guess_bill_amount() then takes the
+      largest of them that equals a slip amount (a 1-digit misread is accepted when only one slip fits).
+  The user can switch a picture's kind and correct every amount.
+* suggest(): a bill whose amount equals exactly one free slip (and no other free bill) is proposed as a pair; an
+  amount shared by several slips/bills is proposed with all its slips for the user to pick. The user confirms pairs;
+  confirmed pairs stay editable on the page.
 * build_pdf(): A4 portrait (595.5 x 842.25 pt, like the user's Canva files). A slip without a handwritten bill
   gets a page of its own (centred); a pair gets the handwritten bill top-left and the slip bottom-right.
   The two are as big as fits without covering each other. Unpaired slips come first, then the pairs, each in upload order.
@@ -21,6 +26,7 @@ import os
 import re
 import shutil
 import subprocess
+import threading
 import zipfile
 from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
@@ -199,23 +205,6 @@ def read_amount(data: bytes) -> dict:
     return {"amount": amount, "sure": amount is not None and votes >= n - 1}
 
 
-def read_amounts(datas: list[bytes], progress=None, workers: int = 4) -> list[dict]:
-    done = 0
-    out: list[dict | None] = [None] * len(datas)
-    with ThreadPoolExecutor(max_workers=workers) as ex:
-        futs = {ex.submit(read_amount, d): i for i, d in enumerate(datas)}
-        for f in futs:
-            i = futs[f]
-            try:
-                out[i] = f.result()
-            except Exception:
-                out[i] = {"amount": None, "sure": False}
-            done += 1
-            if progress:
-                progress(done, len(datas))
-    return out
-
-
 # --------------------------------------------------------------------------- #
 # Prices typed by the user
 # --------------------------------------------------------------------------- #
@@ -235,66 +224,166 @@ def money(v: float | None) -> str:
 
 
 # --------------------------------------------------------------------------- #
-# Matching
+# Reading every picture: slip or bill, and its amount(s)
 # --------------------------------------------------------------------------- #
-def match(slips: dict[str, float | None], bills: dict[str, float | None],
-          picks: dict[str, str | None] | None = None) -> dict:
-    """slips {slip_id: amount}, bills {bill_id: price} (both in upload order; None = unknown / not typed).
-    picks {bill_id: slip_id or "" (= no pair)} are the user's answers for duplicated amounts.
+_MASK = re.compile(r"[xX×]{3}\s*-\s*[xX×\d]")            # masked account number on a bank slip
+_NUMBER = re.compile(r"\d[\d,.]*\d|\d")
+_SLIP_WORDS = ("สำเร็จ", "สําเร็จ", "ธรรมเนียม", "เลขที่รายการ", "หมายเลขอ้างอิง", "บันทึกช่วยจ", "ตรวจสอบสลิป",
+               "THB", "WARINLADA", "KSA0")
+_rapid = None
+_rapid_lock = threading.Lock()
 
-    -> {'pairs': [(bill_id, slip_id)] in slip order,
-        'groups': [{'amount', 'slips', 'bills'}] amounts with more than one slip or bill (the user picks),
-        'open_groups': amounts of groups still waiting for a pick,
-        'auto_picked': {bill_id: slip_id} filled in because only one choice was left,
-        'conflicts': {amount: [slip_id]} slips chosen for two bills,
-        'no_slip': [bill_id] price typed but no slip has that amount,
-        'blank': [bill_id] no price yet}"""
-    picks = picks or {}
-    by_amount_s: dict[float, list[str]] = {}
-    for sid, a in slips.items():
+
+def rapid_engine():
+    """The RapidOCR engine (loaded once), or None when the package is not installed."""
+    global _rapid
+    if _rapid is None:
+        try:
+            from rapidocr import RapidOCR
+            _rapid = RapidOCR(params={"Global.log_level": "error"})
+        except Exception:
+            _rapid = False
+    return _rapid or None
+
+
+def reader_name() -> str:
+    """Which OCR will be used: 'rapid', 'tesseract' or '' (none: everything is typed by hand)."""
+    if rapid_engine():
+        return "rapid"
+    return "" if ocr_ready() else "tesseract"
+
+
+def numbers_in(text: str) -> list[float]:
+    """Every number written on a bill: 8,460 / 4,540 / 2880.00 / 322.00 -> 8460, 4540, 2880, 322."""
+    out = []
+    for m in _NUMBER.finditer(text):
+        t = m.group(0)
+        cents = 0
+        c = re.search(r"[.,](\d\d)$", t)
+        if c and len(t) > 4:
+            cents = int(c.group(1))
+            t = t[:c.start()]
+        digits = re.sub(r"\D", "", t)
+        if digits and len(digits) <= 7:
+            out.append(int(digits) + cents / 100)
+    return out
+
+
+def _rapid_text(img: Image.Image) -> str:
+    import numpy as np
+    w, h = img.size
+    s = 1280 / max(w, h)
+    if s < 1:
+        img = img.resize((round(w * s), round(h * s)), Image.LANCZOS)
+    with _rapid_lock:
+        r = rapid_engine()(np.array(img))
+    return "\n".join(r.txts or [])
+
+
+def _tess_text(img: Image.Image) -> str:
+    """Tesseract fallback: Thai+English on the dark-text mask, plus digits from the plain picture."""
+    w, h = img.size
+    img = img.resize((1600, max(1, round(h * 1600 / w))), Image.LANCZOS)
+    r, g, b = img.split()
+    top = ImageChops.lighter(ImageChops.lighter(r, g), b).point(lambda v: 255 if v > 130 else 0)
+    return _tess(top, "tha+eng") + "\n" + _tess(img.convert("L"), "eng")
+
+
+def analyze(data: bytes, how: str | None = None) -> dict:
+    """{'kind': 'slip' | 'bill', 'amount': slip amount or None, 'sure': bool, 'numbers': [numbers on a bill]}."""
+    how = reader_name() if how is None else how
+    if not how:
+        return {"kind": "bill", "amount": None, "sure": False, "numbers": []}
+    img = open_image(data)
+    text = _rapid_text(img) if how == "rapid" else _tess_text(img)
+    amounts = amounts_in(text)
+    words = sum(1 for k in _SLIP_WORDS if k in text)
+    if amounts and (_MASK.search(text) or words >= 3):
+        found = [float(a) for a in amounts]
+        amount = found[0]
+        sure = len(set(found)) == 1
+        if not sure and ocr_ready() == "":
+            r = read_amount(data)            # Tesseract votes when the slip shows more than one amount
+            if r["amount"] is not None:
+                amount, sure = r["amount"], r["sure"]
+        return {"kind": "slip", "amount": amount, "sure": sure, "numbers": []}
+    return {"kind": "bill", "amount": None, "sure": False, "numbers": numbers_in(text)}
+
+
+def _one_digit_off(a: str, b: str) -> bool:
+    return len(a) == len(b) and sum(x != y for x, y in zip(a, b)) == 1
+
+
+def guess_bill_amount(numbers: list[float], slip_amounts: list[float]) -> tuple[float | None, str]:
+    """(amount, 'exact' | 'near' | '') — the bill total, chosen among the numbers read on the bill by what the slips
+    say: the largest number that is a slip amount; otherwise a number 1 digit away from exactly one slip amount."""
+    by_whole: dict[int, float] = {}
+    for a in slip_amounts:
         if a is not None:
-            by_amount_s.setdefault(round(a, 2), []).append(sid)
-    by_amount_b: dict[float, list[str]] = {}
-    blank = []
-    for bid, p in bills.items():
-        if p is None:
-            blank.append(bid)
-        else:
-            by_amount_b.setdefault(round(p, 2), []).append(bid)
+            by_whole.setdefault(int(a), a)
+    exact = [by_whole[int(n)] for n in numbers if int(n) in by_whole and int(n) >= 10]
+    if exact:
+        return max(exact), "exact"
+    near = {by_whole[w] for n in numbers if int(n) >= 100
+            for w in by_whole if _one_digit_off(str(int(n)), str(w))}
+    if len(near) == 1:
+        return near.pop(), "near"
+    return None, ""
 
-    pair_of_slip: dict[str, str] = {}
-    groups, open_groups, conflicts, auto_picked, no_slip = [], [], {}, {}, []
-    for amount, bids in by_amount_b.items():
-        sids = by_amount_s.get(amount, [])
-        if not sids:
-            no_slip.extend(bids)
+
+def analyze_all(datas: list[bytes], progress=None) -> list[dict]:
+    """analyze() for many pictures. RapidOCR already uses every CPU, so it runs one at a time; Tesseract runs 4."""
+    how = reader_name()
+    out: list[dict | None] = [None] * len(datas)
+    with ThreadPoolExecutor(max_workers=1 if how == "rapid" else 4) as ex:
+        futs = {ex.submit(analyze, d, how): i for i, d in enumerate(datas)}
+        for n, f in enumerate(futs, 1):
+            try:
+                out[futs[f]] = f.result()
+            except Exception:
+                out[futs[f]] = {"kind": "bill", "amount": None, "sure": False, "numbers": []}
+            if progress:
+                progress(n, len(datas))
+    return out
+
+
+# --------------------------------------------------------------------------- #
+# Suggested pairs
+# --------------------------------------------------------------------------- #
+def same_amount(a: float | None, b: float | None) -> bool:
+    return a is not None and b is not None and round(a, 2) == round(b, 2)
+
+
+def suggest(slips: dict[str, float | None], bills: dict[str, float | None], confirmed: dict[str, str],
+            rejected: set[tuple[str, str]] = frozenset()) -> dict:
+    """slips {slip_id: amount} and bills {bill_id: amount} in upload order; confirmed {bill_id: slip_id};
+    rejected {(bill_id, slip_id)} pairs the user said are wrong.
+
+    -> {'pairs': [(bill_id, slip_id)] one bill, one slip with that amount,
+        'choices': [(bill_id, [slip_id, ...])] the amount is shared: the user picks the slip,
+        'free_bills': [bill_id] no slip with that amount (or no amount yet), 'free_slips': [slip_id]}"""
+    taken = set(confirmed.values())
+    free_s = [s for s in slips if s not in taken]
+    free_b = [b for b in bills if b not in confirmed]
+    cands = {b: [s for s in free_s if same_amount(bills[b], slips[s]) and (b, s) not in rejected] for b in free_b}
+    want: dict[str, list[str]] = {}
+    for b, ss in cands.items():
+        for s in ss:
+            want.setdefault(s, []).append(b)
+    pairs, choices = [], []
+    for b in free_b:
+        ss = cands[b]
+        if not ss:
             continue
-        if len(sids) == 1 and len(bids) == 1:
-            pair_of_slip[sids[0]] = bids[0]
-            continue
-        groups.append({"amount": amount, "slips": sids, "bills": bids})
-        chosen = {b: picks.get(b) for b in bids if picks.get(b) is not None}
-        used = [s for s in chosen.values() if s]
-        dup = sorted({s for s in used if used.count(s) > 1})
-        if dup:
-            conflicts[amount] = dup
-            open_groups.append(amount)
-            continue
-        waiting = [b for b in bids if b not in chosen]
-        free = [s for s in sids if s not in used]
-        # one bill left and one slip left: nothing to choose
-        if len(waiting) == 1 and len(free) == 1 and len(sids) == len(bids):
-            chosen[waiting[0]] = free[0]
-            auto_picked[waiting[0]] = free[0]
-            waiting = []
-        if waiting:
-            open_groups.append(amount)
-        for b, s in chosen.items():
-            if s:
-                pair_of_slip[s] = b
-    pairs = [(pair_of_slip[s], s) for s in slips if s in pair_of_slip]
-    return {"pairs": pairs, "groups": groups, "open_groups": open_groups, "auto_picked": auto_picked,
-            "conflicts": conflicts, "no_slip": no_slip, "blank": blank}
+        if len(ss) == 1 and len(want[ss[0]]) == 1:
+            pairs.append((b, ss[0]))
+        else:
+            choices.append((b, ss))
+    offered = {b for b, _ in pairs} | {b for b, _ in choices}
+    offered_s = {s for _, s in pairs} | {s for _, ss in choices for s in ss}
+    return {"pairs": pairs, "choices": choices,
+            "free_bills": [b for b in free_b if b not in offered],
+            "free_slips": [s for s in free_s if s not in offered_s]}
 
 
 # --------------------------------------------------------------------------- #
