@@ -8,8 +8,11 @@
 3. ① รอยืนยัน: suggested pairs (same amount), ✅ confirm or ✖ reject; a shared amount shows its slips to pick from.
    ② ยังไม่มีคู่: bills/slips without a pair; fix the amount, pick any slip / bill by hand (also one that was
       rejected or is already paired: it moves), or switch the kind.
-   ③ จับคู่แล้ว: confirmed pairs; the slip can be changed (to any slip) or the pair undone.
-4. 📥 PDF (A4 portrait): pairs show the bill top-left and the slip bottom-right, as large as fits without covering.
+   ➕ group builder: several handwritten bills of one shop paid with one transfer (picked by hand; sets of 2-3 free
+      bills whose amounts add up to the slip are offered). A bill can also join a paired slip from ② (➕ รวมกลุ่ม).
+   ③ จับคู่แล้ว: confirmed pairs and groups; the slip can be changed (to any slip) or the pair / group undone.
+4. 📥 PDF (A4 portrait): pairs show the bill top-left and the slip bottom-right, as large as fits without covering;
+   a group shows its bills in a grid with the slip below (bottom-right).
    Without order files: one PDF, unpaired slips first, then the pairs. With order files: one PDF per file, in the
    file's line order; an amount found in several files is put where the user chooses; file names are editable.
 
@@ -148,21 +151,35 @@ def _amount(i: str) -> tuple[float | None, bool]:
         return None, False
 
 
-def _save_amount(i: str) -> None:
-    st.session_state.bm_amt[i] = st.session_state.get(f"bm_in_{i}", "")
+def _save_amount(i: str, wkey: str) -> None:
+    st.session_state.bm_amt[i] = st.session_state.get(wkey, "")
 
 
-def amount_box(i: str, label: str, **kw) -> None:
-    st.session_state[f"bm_in_{i}"] = st.session_state.bm_amt.get(i, "")
-    st.text_input(label, key=f"bm_in_{i}", on_change=_save_amount, args=(i,), **kw)
+def amount_box(i: str, label: str, where: str = "in", **kw) -> None:
+    wkey = f"bm_{where}_{i}"
+    st.session_state[wkey] = st.session_state.bm_amt.get(i, "")
+    st.text_input(label, key=wkey, on_change=_save_amount, args=(i, wkey), **kw)
 
 
-def _grid(items: list, draw, cols: int) -> None:
-    for start in range(0, len(items), cols):
-        row = st.columns(cols)
-        for col, item in zip(row, items[start:start + cols]):
-            with col:
-                draw(item)
+def _grid(items: list, draw, cols: int, wide=None) -> None:
+    """items in rows of cols; an item for which wide(item) is true gets a whole row of its own."""
+    row: list = []
+
+    def flush():
+        if row:
+            for col, item in zip(st.columns(cols), row):
+                with col:
+                    draw(item)
+            row.clear()
+    for item in items:
+        if wide and wide(item):
+            flush()
+            draw(item)
+        else:
+            row.append(item)
+            if len(row) == cols:
+                flush()
+    flush()
 
 
 def _file_name(name: str, fallback: str) -> str:
@@ -198,14 +215,57 @@ def _clear_rejects() -> None:
     st.session_state.bm_rejected.clear()
 
 
-def _undo(b: str) -> None:
-    st.session_state.bm_confirmed.pop(b, None)
+def _add_to_group(b: str, s: str) -> None:
+    """Pay several handwritten bills with one transfer: b joins the bills already paired with s."""
+    st.session_state.bm_confirmed[b] = s
+    st.session_state.bm_rejected.discard((b, s))
 
 
-def _change_slip(b: str) -> None:
-    s = st.session_state.get(f"bm_chg_{b}")
-    if s and st.session_state.bm_confirmed.get(b) != s:
-        _pair(b, s)
+def _undo_slip(s: str) -> None:
+    """Undo a pair or a whole group: every bill paired with slip s goes back to ②."""
+    confirmed = st.session_state.bm_confirmed
+    for b in [k for k, v in confirmed.items() if v == s]:
+        confirmed.pop(b)
+
+
+def _change_slip(s_old: str) -> None:
+    """The pair / group of s_old moves to another slip (that slip's own bills go back to ②)."""
+    s = st.session_state.get(f"bm_chg_{s_old}")
+    confirmed = st.session_state.bm_confirmed
+    if not s or s == s_old:
+        return
+    group = [k for k, v in confirmed.items() if v == s_old]
+    for k in [k for k, v in confirmed.items() if v == s]:
+        confirmed.pop(k)
+    for k in group:
+        confirmed[k] = s
+
+
+def _g_slip_changed() -> None:
+    """Group builder: picking a slip that already has bills loads them, to edit the group."""
+    s = st.session_state.get("bm_g_slip")
+    st.session_state.bm_g_bills = [k for k, v in st.session_state.bm_confirmed.items() if v == s] if s else []
+
+
+def _use_combo(combo: list[tuple[str, float]]) -> None:
+    st.session_state.bm_g_bills = [b for b, _ in combo]
+    for b, v in combo:                       # the amounts that add up become the bills' amounts
+        st.session_state.bm_amt[f"{b}-b"] = bm.money(v)
+
+
+def _make_group() -> None:
+    """Group builder: the chosen bills (one or more) become the pair of the chosen slip, replacing what it had."""
+    s, bs = st.session_state.get("bm_g_slip"), list(st.session_state.get("bm_g_bills") or [])
+    if not s or not bs:
+        return
+    confirmed = st.session_state.bm_confirmed
+    for k in [k for k, v in confirmed.items() if v == s]:
+        confirmed.pop(k)
+    for b in bs:
+        confirmed[b] = s
+        st.session_state.bm_rejected.discard((b, s))
+    st.session_state.bm_g_slip = None
+    st.session_state.bm_g_bills = []
 
 
 def _switch_kind(i: str, kind: str) -> None:
@@ -282,13 +342,17 @@ def render(show_flash=None) -> None:
         if b not in bill_amt or s not in slip_amt:
             confirmed.pop(b)
     sug = bm.suggest(slip_amt, bill_amt, confirmed, rejected)
-    bill_of = {s: b for b, s in confirmed.items()}
+    pairs = bm.pairs_of(confirmed, slips, bills)          # [((bill, ...), slip)] in slip upload order
+    bills_of = {s: list(bs) for bs, s in pairs}
+
+    def nums(ids) -> str:
+        return " + ".join(str(order[i]) for i in ids)
 
     def slip_label(s: str, mine: str | None = None) -> str:
         a = slip_amt.get(s)
         text = f"{bm.money(a) if a is not None else '?'} บาท (รูปที่ {order[s]})"
-        if s in bill_of and bill_of[s] != mine:
-            text += " • จับคู่อยู่แล้ว (จะย้ายมา)"
+        if s in bills_of and s != mine:
+            text += f" • จับคู่อยู่แล้วกับรูปที่ {nums(bills_of[s])}"
         return text
 
     def bill_label(b: str) -> str:
@@ -301,7 +365,7 @@ def render(show_flash=None) -> None:
     m[1].metric("บิลเขียนมือ", len(bills))
     m[2].metric("รอยืนยัน", len(sug["pairs"]) + len(sug["choices"]))
     m[3].metric("ยังไม่มีคู่", len(sug["free_bills"]) + len(sug["free_slips"]))
-    m[4].metric("จับคู่แล้ว", len(confirmed))
+    m[4].metric("จับคู่แล้ว", len(pairs))
 
     def amt_line(b: str, s: str) -> str:
         warn = " • ⚠️ ยอดบิลอ่านแบบเดา" if guessed.get(b) == "near" else ""
@@ -356,8 +420,8 @@ def render(show_flash=None) -> None:
     st.subheader(f"② ยังไม่มีคู่ ({len(free_b) + len(free_s)})")
     st.caption("แก้ยอดให้ตรงกับบิลโอน แล้วคู่จะขึ้นในข้อ ① เอง • หรือเลือกจับคู่เอง (เลือกได้ทุกใบ "
                "รวมถึงใบที่เคยกด ✖ หรือจับคู่ไปแล้ว) • ถ้าแอปแยกประเภทผิด กด ↔ เพื่อสลับ")
-    open_slips = [s for s in slips if s not in bill_of]
-    all_slips = open_slips + [s for s in slips if s in bill_of]
+    open_slips = [s for s in slips if s not in bills_of]
+    all_slips = open_slips + [s for s in slips if s in bills_of]
     open_bills = [b for b in bills if b not in confirmed]
     all_bills = open_bills + [b for b in bills if b in confirmed]
     t_bill, t_slip = st.tabs([f"บิลเขียนมือ ({len(free_b)})", f"บิลโอนที่ไม่มีบิลเขียนมือ ({len(free_s)})"])
@@ -382,7 +446,14 @@ def render(show_flash=None) -> None:
                                     format_func=slip_label, placeholder="เลือกบิลโอน...")
                 if pick:
                     pic(by_id[pick], "man", "บิลโอน")
-                    st.button("✅ จับคู่", key=f"bm_mok_{b}", on_click=_pair, args=(b, pick), width="stretch")
+                    if pick in bills_of:
+                        st.button("➕ รวมกลุ่มกับบิลเขียนมือเดิม", key=f"bm_madd_{b}", on_click=_add_to_group,
+                                  args=(b, pick), width="stretch", type="primary",
+                                  help="บิลเขียนมือหลายใบ รวมกันเท่ากับบิลโอนใบนี้ (จะอยู่หน้าเดียวกันใน PDF)")
+                        st.button("✅ จับคู่แทนใบเดิม", key=f"bm_mok_{b}", on_click=_pair, args=(b, pick),
+                                  width="stretch")
+                    else:
+                        st.button("✅ จับคู่", key=f"bm_mok_{b}", on_click=_pair, args=(b, pick), width="stretch")
                 st.button("↔ นี่คือบิลโอน", key=f"bm_kb_{b}", on_click=_switch_kind, args=(b, "slip"), type="tertiary")
         _grid(free_b, draw_free_bill, 4)
     with t_slip:
@@ -408,31 +479,43 @@ def render(show_flash=None) -> None:
                           type="tertiary")
         _grid(free_s, draw_free_slip, 4)
 
+    _group_builder(slips, bills, all_slips, all_bills, open_bills, slip_amt, bill_amt, read, by_id, order,
+                   slip_label, bill_label)
+
     # ---------------- 3. confirmed ---------------- #
-    pairs = [(bill_of[s], s) for s in slips if s in bill_of]      # in slip upload order
     st.subheader(f"③ จับคู่แล้ว ({len(pairs)})")
     if not pairs:
         st.caption("ยังไม่มี — กด ✅ ยืนยัน ในข้อ ①")
     else:
         st.caption("จับคู่ผิด: เปลี่ยนบิลโอนในช่องด้านล่างรูป (เลือกได้ทุกใบ) หรือกด ↩️ ยกเลิกคู่ "
-                   "(ทั้งสองใบจะกลับไปข้อ ②)")
+                   "(กลับไปข้อ ② ทั้งหมด) • แก้กลุ่มหลายใบ: เลือกบิลโอนนั้นในช่อง ➕ ด้านบน")
 
     def draw_done(p):
-        b, s = p
+        bs, s = p
         with st.container(border=True):
-            c1, c2 = st.columns(2, gap="small")
-            with c1:
-                pic(by_id[b], "dn", "เขียนมือ")
-            with c2:
+            cols = st.columns(2 if len(bs) == 1 else max(4, len(bs) + 1), gap="small")
+            for col, b in zip(cols, bs):
+                with col:
+                    pic(by_id[b], "dn", "เขียนมือ")
+            with cols[len(bs)]:
                 pic(by_id[s], "dn", "บิลโอน")
-            same = "" if bm.same_amount(bill_amt.get(b), slip_amt[s]) else " • ⚠️ ยอดไม่ตรงกัน"
-            st.markdown(f"ยอด **{bm.money(slip_amt[s])}** • รูปที่ {order[b]} + {order[s]}{same}")
+            amts = [bill_amt.get(b) for b in bs]
+            total = sum(amts) if None not in amts else None
+            if total is None and len(bs) > 1:
+                same = " • ⚠️ บิลเขียนมือบางใบยังไม่มียอด"
+            else:
+                same = "" if bm.same_amount(total, slip_amt[s]) else " • ⚠️ ยอดไม่ตรงกัน"
+            head = f"กลุ่ม {len(bs)} ใบ • บิลเขียนมือรวม {bm.money(total) if total is not None else '?'} • " \
+                if len(bs) > 1 else ""
+            st.markdown(f"{head}ยอดโอน **{bm.money(slip_amt[s])}** • รูปที่ {nums(bs)} + {order[s]}{same}")
+            k1, k2 = st.columns([2, 1], gap="small") if len(bs) > 1 else (st.container(), st.container())
             options = [s] + [x for x in all_slips if x != s]
-            st.session_state[f"bm_chg_{b}"] = s
-            st.selectbox("บิลโอน", options, key=f"bm_chg_{b}", on_change=_change_slip, args=(b,),
-                         format_func=lambda x: slip_label(x, mine=b), label_visibility="collapsed")
-            st.button("↩️ ยกเลิกคู่", key=f"bm_undo_{b}", on_click=_undo, args=(b,), width="stretch")
-    _grid(pairs, draw_done, 2)
+            st.session_state[f"bm_chg_{s}"] = s
+            k1.selectbox("บิลโอน", options, key=f"bm_chg_{s}", on_change=_change_slip, args=(s,),
+                         format_func=lambda x: slip_label(x, mine=s), label_visibility="collapsed")
+            k2.button("↩️ ยกเลิกกลุ่ม" if len(bs) > 1 else "↩️ ยกเลิกคู่", key=f"bm_undo_{s}", on_click=_undo_slip,
+                      args=(s,), width="stretch")
+    _grid(pairs, draw_done, 2, wide=lambda p: len(p[0]) > 1)
 
     # ---------------- 4. PDF ---------------- #
     st.subheader("④ ดาวน์โหลด PDF")
@@ -450,9 +533,62 @@ def render(show_flash=None) -> None:
         _single(slips, bills, pairs, data, "bm_extra")
 
 
-def _single(slips: list[str], bills: list[str], pairs: list[tuple[str, str]], data: dict, key: str) -> None:
+def _group_builder(slips, bills, all_slips, all_bills, open_bills, slip_amt, bill_amt, read, by_id, order,
+                   slip_label, bill_label) -> None:
+    """Several handwritten bills of one shop paid with one transfer: pick the slip and all its bills by hand."""
+    if st.session_state.get("bm_g_slip") not in slips:
+        st.session_state.bm_g_slip = None
+    st.session_state.bm_g_bills = [b for b in st.session_state.get("bm_g_bills") or [] if b in bills]
+    with st.expander("➕ บิลเขียนมือหลายใบ รวมกันเท่ากับบิลโอน 1 ใบ — จับคู่เป็นกลุ่มเอง"):
+        st.caption("ใช้เมื่อร้านเดียวมีบิลเขียนมือหลายใบแต่โอนครั้งเดียว: เลือกบิลโอน แล้วเลือกบิลเขียนมือทุกใบของมัน "
+                   "• ใน PDF บิลเขียนมือจะเรียงเป็นตารางด้านบน บิลโอนอยู่ด้านล่าง (คู่ 1 ต่อ 1 ใช้แบบเดิม)")
+        g1, g2 = st.columns([1, 2])
+        gs = g1.selectbox("บิลโอน", all_slips, key="bm_g_slip", format_func=slip_label, on_change=_g_slip_changed,
+                          placeholder="เลือกบิลโอน...")
+        gb = g2.multiselect("บิลเขียนมือ (เลือกได้หลายใบ)", all_bills, key="bm_g_bills", format_func=bill_label,
+                            placeholder="เลือกบิลเขียนมือ...")
+        if gs and not gb:
+            target = slip_amt.get(gs)
+            cands = {b: bm.bill_candidates(bill_amt.get(b), read[b]["numbers"], below=target) for b in open_bills}
+            combos = bm.find_groups(target, cands)
+            if combos:
+                st.caption("บิลเขียนมือที่ยังไม่มีคู่ ซึ่งยอดรวมกันเท่ากับบิลโอนนี้ (กดเพื่อเลือก แล้วตรวจรูปก่อนยืนยัน):")
+                for n, combo in enumerate(combos):
+                    text = " + ".join(f"รูปที่ {order[b]} ({bm.money(v)})" for b, v in combo)
+                    st.button(f"ใช้ชุดนี้: {text} = {bm.money(target)}", key=f"bm_combo_{n}", on_click=_use_combo,
+                              args=(combo,), type="tertiary")
+            elif target is not None:
+                st.caption("ไม่เจอบิลเขียนมือ 2-3 ใบที่ยอดรวมเท่ากับบิลโอนนี้ — เลือกเองในช่องขวา")
+        if not (gs or gb):
+            return
+        items = [(b, "เขียนมือ") for b in gb] + ([(gs, "บิลโอน")] if gs else [])
+        cols = st.columns(max(4, len(items)), gap="small")
+        for col, (i, tag) in zip(cols, items):
+            with col:
+                pic(by_id[i], "grp", f"{tag} • รูปที่ {order[i]}")
+                if tag == "เขียนมือ":
+                    amount_box(f"{i}-b", "ยอดบิลนี้ (บาท)", where="gin", placeholder="เช่น 500")
+        if not gb:
+            return
+        amts = [bill_amt.get(b) for b in gb]
+        total = sum(a for a in amts if a is not None)
+        line = f"บิลเขียนมือ {len(gb)} ใบ รวม **{bm.money(total)}**"
+        if gs:
+            line += f" • บิลโอน **{bm.money(slip_amt.get(gs))}**"
+            if None in amts:
+                line += f" • ⚠️ ยังไม่มียอด {amts.count(None)} ใบ (ใส่ใต้รูปได้)"
+            elif bm.same_amount(total, slip_amt.get(gs)):
+                line += " • ✅ เท่ากัน"
+            elif slip_amt.get(gs) is not None:
+                line += f" • ⚠️ ต่างกัน {bm.money(abs(total - slip_amt[gs]))}"
+        st.markdown(line)
+        st.button(f"✅ จับคู่เป็นกลุ่ม ({len(gb)} ใบ + บิลโอน 1 ใบ)", key="bm_g_ok", type="primary",
+                  on_click=_make_group, disabled=not gs)
+
+
+def _single(slips: list[str], bills: list[str], pairs: list[tuple], data: dict, key: str) -> None:
     """One PDF with everything: unpaired slips, then the pairs (and the unpaired bills when asked)."""
-    paired_bills = {b for b, _ in pairs}
+    paired_bills = {b for bs, _ in pairs for b in bs}
     extra = [b for b in bills if b not in paired_bills]
     add_extra = False
     if extra:
@@ -460,13 +596,13 @@ def _single(slips: list[str], bills: list[str], pairs: list[tuple[str, str]], da
     pages = bm.page_plan(slips, pairs, extra if add_extra else [])
     lone = len(slips) - len(pairs)
     st.caption(f"PDF {len(pages)} หน้า (A4 แนวตั้ง): บิลโอนที่ไม่มีคู่ {lone} หน้า แล้วต่อด้วยคู่บิล {len(pairs)} หน้า "
-               f"(บิลเขียนมือมุมซ้ายบน บิลโอนมุมขวาล่าง ไม่ทับกัน)"
+               f"(บิลเขียนมือมุมซ้ายบน บิลโอนมุมขวาล่าง ไม่ทับกัน • กลุ่มหลายใบ: บิลเขียนมือเรียงเป็นตาราง บิลโอนด้านล่าง)"
                + (f" และบิลเขียนมือที่ไม่มีคู่ {len(extra)} หน้า" if add_extra else ""))
     st.download_button("📥 ดาวน์โหลด PDF", data=lambda: bm.build_pdf(pages, data), file_name="จับคู่บิล.pdf",
                        mime="application/pdf", type="primary", on_click="ignore", key=f"{key}_dl")
 
 
-def _by_files(orders: list[dict], slip_amt: dict, bill_amt: dict, pairs: list[tuple[str, str]], by_id: dict,
+def _by_files(orders: list[dict], slip_amt: dict, bill_amt: dict, pairs: list[tuple], by_id: dict,
               order: dict, data: dict) -> None:
     """One PDF per order file, the receipts in the file's line order."""
     choice = _state("bm_file_choice", {})
@@ -483,20 +619,25 @@ def _by_files(orders: list[dict], slip_amt: dict, bill_amt: dict, pairs: list[tu
         u = unit_by_id[uid]
         a = bm.money(u["amount"]) if u["amount"] is not None else "?"
         if u["page"][0] == "pair":
-            return f"{a} • คู่บิล (รูปที่ {order[u['page'][1]]} + {order[u['page'][2]]})"
+            bs = u["page"][1]
+            what = "คู่บิล" if len(bs) == 1 else f"กลุ่ม {len(bs)} ใบ"
+            return f"{a} • {what} (รูปที่ {' + '.join(str(order[b]) for b in bs)} + {order[u['page'][2]]})"
         what = "บิลโอนอย่างเดียว" if u["page"][0] == "slip" else "บิลเขียนมืออย่างเดียว"
         return f"{a} • {what} (รูปที่ {order[u['page'][1]]})"
 
     def draw_unit(uid: str, options: list[str], where: str) -> None:
         u = unit_by_id[uid]
         with st.container(border=True):
-            c1, c2 = st.columns(2, gap="small")
             if u["page"][0] == "pair":
-                with c1:
-                    pic(by_id[u["page"][1]], where, "เขียนมือ")
-                with c2:
+                bs = u["page"][1]
+                cols = st.columns(len(bs) + 1, gap="small")
+                for col, b in zip(cols, bs):
+                    with col:
+                        pic(by_id[b], where, "เขียนมือ")
+                with cols[-1]:
                     pic(by_id[u["page"][2]], where, "บิลโอน")
             else:
+                c1, _ = st.columns(2, gap="small")
                 with c1:
                     pic(by_id[u["page"][1]], where, "บิลโอน" if u["page"][0] == "slip" else "เขียนมือ")
             st.markdown(unit_text(uid))

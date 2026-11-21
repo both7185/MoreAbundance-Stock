@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import hashlib
 import io
+import math
 import os
 import re
 import shutil
@@ -399,6 +400,54 @@ def suggest(slips: dict[str, float | None], bills: dict[str, float | None], conf
             "free_slips": [s for s in free_s if s not in offered_s]}
 
 
+def pairs_of(confirmed: dict[str, str], slip_ids: list[str], bill_ids: list[str]) -> list[tuple[tuple[str, ...], str]]:
+    """Confirmed pairs in slip upload order: [((bill_id, ...), slip_id)]. Usually one bill; several bills of one shop
+    that add up to one transfer make a group (the bills in upload order)."""
+    out = []
+    for s in slip_ids:
+        bs = tuple(b for b in bill_ids if confirmed.get(b) == s)
+        if bs:
+            out.append((bs, s))
+    return out
+
+
+def _bills(b) -> tuple[str, ...]:
+    return tuple(b) if isinstance(b, (tuple, list)) else (b,)
+
+
+def bill_candidates(typed: float | None, numbers: list[float], below: float | None = None, top: int = 6) -> list[float]:
+    """The amounts a bill may stand for in a group: the typed amount, or else the largest numbers read on it."""
+    if typed is not None:
+        return [typed]
+    vals = sorted({round(n, 2) for n in numbers if n >= 20 and (below is None or n < below)}, reverse=True)
+    return vals[:top]
+
+
+def find_groups(target: float | None, cands: dict[str, list[float]], sizes: tuple[int, ...] = (2, 3),
+                limit: int = 3, max_bills: int = 30) -> list[list[tuple[str, float]]]:
+    """Sets of 2-3 bills whose amounts add up to target (one transfer paying several bills of one shop):
+    [[(bill_id, amount), ...]]. cands {bill_id: [possible amounts, likeliest first]} from bill_candidates().
+    Only the likeliest sets are kept: those using each bill's likeliest amount (its largest number, usually the
+    total), or as close to that as any set gets."""
+    from itertools import combinations, product
+
+    if target is None:
+        return []
+    ids = [b for b in cands if cands[b]][:max_bills]
+    found = []
+    for k in sizes:
+        for combo in combinations(ids, k):
+            best = None
+            for idx in product(*(range(len(cands[b])) for b in combo)):
+                vals = [cands[b][i] for b, i in zip(combo, idx)]
+                if round(sum(vals), 2) == round(target, 2) and (best is None or sum(idx) < best[0]):
+                    best = (sum(idx), list(zip(combo, vals)))
+            if best:
+                found.append((best[0], k, best[1]))
+    found.sort(key=lambda t: (t[0], t[1]))
+    return [f[2] for f in found if f[0] == found[0][0]][:limit]     # only the likeliest ones
+
+
 # --------------------------------------------------------------------------- #
 # Order files (ใบปะหน้า / ใบรับรองแทนใบเสร็จ): one output PDF per file, receipts in the file's order
 # --------------------------------------------------------------------------- #
@@ -443,11 +492,11 @@ def parse_order_pdf(data: bytes) -> dict:
 
 
 def order_units(slips: dict[str, float | None], bills: dict[str, float | None],
-                pairs: list[tuple[str, str]]) -> list[dict]:
-    """What goes on the pages, in slip upload order: a confirmed pair, a slip alone, or a bill alone
-    -> [{'id', 'amount', 'page'}]. Bills alone come last."""
-    paired_s = {s: b for b, s in pairs}
-    paired_b = set(paired_s.values())
+                pairs: list[tuple]) -> list[dict]:
+    """What goes on the pages, in slip upload order: a confirmed pair (or group), a slip alone, or a bill alone
+    -> [{'id', 'amount', 'page'}]. Bills alone come last. pairs [(bill_id or (bill_id, ...), slip_id)]."""
+    paired_s = {s: _bills(b) for b, s in pairs}
+    paired_b = {b for bs in paired_s.values() for b in bs}
     units = []
     for s, a in slips.items():
         if s in paired_s:
@@ -592,12 +641,52 @@ def pair_layout(bill_size: tuple[int, int], slip_size: tuple[int, int]) -> tuple
     return best[1], best[2]
 
 
-def page_plan(slip_ids: list[str], pairs: list[tuple[str, str]], extra_bills: list[str] = ()) -> list[tuple]:
-    """Pages in order: ('slip', slip_id) for slips without a bill, then ('pair', bill_id, slip_id),
-    then ('bill', bill_id) for extra_bills (unpaired handwritten bills the user asked to include)."""
+def group_layout(bill_sizes: list[tuple[int, int]], slip_size: tuple[int, int]) -> tuple[list[tuple], tuple]:
+    """Several handwritten bills and their one transfer slip on a page, none covering another: the bills in a grid
+    (e.g. two side by side on top) and the slip below at the right, or all in one grid with the slip in the
+    bottom-right cell. The arrangement where the pictures come out largest wins (the slip weighs as much as all the bills)."""
+    n = len(bill_sizes)
+    x0, y0, x1, y1 = MARGIN, MARGIN, PAGE_W - MARGIN, PAGE_H - MARGIN
+
+    def cells(box, cols, rows):
+        bx0, by0, bx1, by1 = box
+        cw = (bx1 - bx0 - GAP * (cols - 1)) / cols
+        ch = (by1 - by0 - GAP * (rows - 1)) / rows
+        return [(bx0 + c * (cw + GAP), by0 + r * (ch + GAP), bx0 + c * (cw + GAP) + cw, by0 + r * (ch + GAP) + ch)
+                for r in range(rows) for c in range(cols)]
+
+    def score(rb, rs):           # the slip counts as much as all the bills together, so it never ends up tiny
+        return sum(math.log(max(r[2] * r[3], 1e-6)) for r in rb) / len(rb) + math.log(max(rs[2] * rs[3], 1e-6))
+
+    best = None
+    for cols in range(1, n + 1):                      # bills on top, slip below
+        rows = -(-n // cols)
+        for split in range(30, 86):
+            cut = y0 + (y1 - y0 - GAP) * split / 100
+            cs = cells((x0, y0, x1, cut), cols, rows)
+            rb = [_fit(sz, c, "center") for sz, c in zip(bill_sizes, cs)]
+            rs = _fit(slip_size, (x0, cut + GAP, x1, y1), "bottom-right")
+            sc = score(rb, rs)
+            if best is None or sc > best[0]:
+                best = (sc, rb, rs)
+    for cols in range(2, n + 2):                      # one grid, the slip in the last (bottom-right) cell
+        rows = -(-(n + 1) // cols)
+        cs = cells((x0, y0, x1, y1), cols, rows)
+        rb = [_fit(sz, c, "center") for sz, c in zip(bill_sizes, cs)]
+        rs = _fit(slip_size, cs[-1], "bottom-right")
+        sc = score(rb, rs)
+        if sc > best[0]:
+            best = (sc, rb, rs)
+    return best[1], best[2]
+
+
+def page_plan(slip_ids: list[str], pairs: list[tuple], extra_bills: list[str] = ()) -> list[tuple]:
+    """Pages in order: ('slip', slip_id) for slips without a bill, then ('pair', (bill_id, ...), slip_id),
+    then ('bill', bill_id) for extra_bills (unpaired handwritten bills the user asked to include).
+    pairs [(bill_id or (bill_id, ...), slip_id)]: several bills share one page with their transfer slip."""
     paired = {s for _, s in pairs}
     pages: list[tuple] = [("slip", s) for s in slip_ids if s not in paired]
-    pages += [("pair", b, s) for b, s in pairs]
+    pages += [("pair", _bills(b), s) for b, s in pairs]
     pages += [("bill", b) for b in extra_bills]
     return pages
 
@@ -631,7 +720,13 @@ def build_pdf(pages: list[tuple], images: dict[str, bytes], longest: int = 1400)
             place(page[1], _fit(pic(page[1])[1], SINGLE_BOX, "center"))
         else:
             _, bill, slip = page
-            rb, rs = pair_layout(pic(bill)[1], pic(slip)[1])
-            place(bill, rb)
+            bs = _bills(bill)
+            if len(bs) == 1:
+                rb, rs = pair_layout(pic(bs[0])[1], pic(slip)[1])
+                rbs = [rb]
+            else:
+                rbs, rs = group_layout([pic(b)[1] for b in bs], pic(slip)[1])
+            for b, rb in zip(bs, rbs):
+                place(b, rb)
             place(slip, rs, frame=True)   # thin grey edge: the white slip stays visible on white paper
     return bytes(pdf.output())
