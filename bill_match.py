@@ -369,14 +369,14 @@ def same_amount(a: float | None, b: float | None) -> bool:
 
 
 def suggest(slips: dict[str, float | None], bills: dict[str, float | None], confirmed: dict[str, str],
-            rejected: set[tuple[str, str]] = frozenset()) -> dict:
+            rejected: set[tuple[str, str]] = frozenset(), also_taken: set[str] = frozenset()) -> dict:
     """slips {slip_id: amount} and bills {bill_id: amount} in upload order; confirmed {bill_id: slip_id};
     rejected {(bill_id, slip_id)} pairs the user said are wrong.
 
     -> {'pairs': [(bill_id, slip_id)] one bill, one slip with that amount,
         'choices': [(bill_id, [slip_id, ...])] the amount is shared: the user picks the slip,
         'free_bills': [bill_id] no slip with that amount (or no amount yet), 'free_slips': [slip_id]}"""
-    taken = set(confirmed.values())
+    taken = set(confirmed.values()) | set(also_taken)      # also_taken: a group's other slips
     free_s = [s for s in slips if s not in taken]
     free_b = [b for b in bills if b not in confirmed]
     cands = {b: [s for s in free_s if same_amount(bills[b], slips[s]) and (b, s) not in rejected] for b in free_b}
@@ -400,14 +400,19 @@ def suggest(slips: dict[str, float | None], bills: dict[str, float | None], conf
             "free_slips": [s for s in free_s if s not in offered_s]}
 
 
-def pairs_of(confirmed: dict[str, str], slip_ids: list[str], bill_ids: list[str]) -> list[tuple[tuple[str, ...], str]]:
-    """Confirmed pairs in slip upload order: [((bill_id, ...), slip_id)]. Usually one bill; several bills of one shop
-    that add up to one transfer make a group (the bills in upload order)."""
+def pairs_of(confirmed: dict[str, str], slip_ids: list[str], bill_ids: list[str],
+             more: dict[str, list[str]] | None = None) -> list[tuple[tuple[str, ...], tuple[str, ...]]]:
+    """Confirmed pairs in slip upload order: [((bill_id, ...), (slip_id, ...))]. Usually one bill and one slip.
+    A group has several bills of one shop paid with one transfer, and/or one bill paid with several transfers.
+    confirmed {bill_id: lead slip_id}; more {lead slip_id: [the group's other slip_ids]}. Both sides in upload order."""
+    more = more or {}
+    pos = {s: n for n, s in enumerate(slip_ids)}
     out = []
     for s in slip_ids:
         bs = tuple(b for b in bill_ids if confirmed.get(b) == s)
         if bs:
-            out.append((bs, s))
+            ss = tuple(sorted([s] + [x for x in more.get(s, []) if x in pos and x != s], key=pos.get))
+            out.append((bs, ss))
     return out
 
 
@@ -421,6 +426,18 @@ def bill_candidates(typed: float | None, numbers: list[float], below: float | No
         return [typed]
     vals = sorted({round(n, 2) for n in numbers if n >= 20 and (below is None or n < below)}, reverse=True)
     return vals[:top]
+
+
+def find_slip_sets(bill_cands: list[float], slip_amts: dict[str, float | None], sizes: tuple[int, ...] = (2, 3),
+                   limit: int = 3) -> list[tuple[list[str], float]]:
+    """Sets of 2-3 slips whose amounts add up to one bill (one bill paid with several transfers):
+    [([slip_id, ...], total)]. bill_cands: the bill's possible totals, likeliest first (bill_candidates())."""
+    cands = {s: [a] for s, a in slip_amts.items() if a is not None}
+    for total in bill_cands:
+        found = find_groups(total, cands, sizes, limit)
+        if found:
+            return [([s for s, _ in f], total) for f in found]
+    return []
 
 
 def find_groups(target: float | None, cands: dict[str, list[float]], sizes: tuple[int, ...] = (2, 3),
@@ -494,14 +511,19 @@ def parse_order_pdf(data: bytes) -> dict:
 def order_units(slips: dict[str, float | None], bills: dict[str, float | None],
                 pairs: list[tuple]) -> list[dict]:
     """What goes on the pages, in slip upload order: a confirmed pair (or group), a slip alone, or a bill alone
-    -> [{'id', 'amount', 'page'}]. Bills alone come last. pairs [(bill_id or (bill_id, ...), slip_id)]."""
-    paired_s = {s: _bills(b) for b, s in pairs}
-    paired_b = {b for bs in paired_s.values() for b in bs}
+    -> [{'id', 'amount', 'page'}]. Bills alone come last. pairs [(bill_id or (bill_id, ...), slip_id or (slip_id, ...))].
+    A group's amount is its slips' total; its id is its first slip."""
+    by_first = {_bills(ss)[0]: (_bills(b), _bills(ss)) for b, ss in pairs}
+    in_pair = {x for _, ss in by_first.values() for x in ss}
+    paired_b = {b for bs, _ in by_first.values() for b in bs}
     units = []
     for s, a in slips.items():
-        if s in paired_s:
-            units.append({"id": s, "amount": a, "page": ("pair", paired_s[s], s)})
-        else:
+        if s in by_first:
+            bs, ss = by_first[s]
+            amts = [slips.get(x) for x in ss]
+            total = round(sum(amts), 2) if None not in amts else None
+            units.append({"id": s, "amount": total, "page": ("pair", bs, ss)})
+        elif s not in in_pair:
             units.append({"id": s, "amount": a, "page": ("slip", s)})
     for b, a in bills.items():
         if b not in paired_b:
@@ -641,11 +663,14 @@ def pair_layout(bill_size: tuple[int, int], slip_size: tuple[int, int]) -> tuple
     return best[1], best[2]
 
 
-def group_layout(bill_sizes: list[tuple[int, int]], slip_size: tuple[int, int]) -> tuple[list[tuple], tuple]:
-    """Several handwritten bills and their one transfer slip on a page, none covering another: the bills in a grid
-    (e.g. two side by side on top) and the slip below at the right, or all in one grid with the slip in the
-    bottom-right cell. The arrangement where the pictures come out largest wins (the slip weighs as much as all the bills)."""
-    n = len(bill_sizes)
+def group_layout(bill_sizes: list[tuple[int, int]], slip_sizes) -> tuple[list[tuple], list[tuple]]:
+    """A group on one page, nothing covering anything: the handwritten bills in a grid on top (e.g. two side by side)
+    and the transfer slips below (one slip: at the right), or all in one grid with the slips in the last
+    (bottom-right) cells. The arrangement where the pictures come out largest wins (the slips weigh as much as the
+    bills). slip_sizes: a list, or one (w, h) for a single slip."""
+    if slip_sizes and isinstance(slip_sizes[0], (int, float)):
+        slip_sizes = [slip_sizes]
+    nb, ns = len(bill_sizes), len(slip_sizes)
     x0, y0, x1, y1 = MARGIN, MARGIN, PAGE_W - MARGIN, PAGE_H - MARGIN
 
     def cells(box, cols, rows):
@@ -655,38 +680,44 @@ def group_layout(bill_sizes: list[tuple[int, int]], slip_size: tuple[int, int]) 
         return [(bx0 + c * (cw + GAP), by0 + r * (ch + GAP), bx0 + c * (cw + GAP) + cw, by0 + r * (ch + GAP) + ch)
                 for r in range(rows) for c in range(cols)]
 
-    def score(rb, rs):           # the slip counts as much as all the bills together, so it never ends up tiny
-        return sum(math.log(max(r[2] * r[3], 1e-6)) for r in rb) / len(rb) + math.log(max(rs[2] * rs[3], 1e-6))
+    def mean_log(rects):
+        return sum(math.log(max(r[2] * r[3], 1e-6)) for r in rects) / len(rects)
+
+    def slips_in(box_cells):
+        anchor = "bottom-right" if ns == 1 else "center"
+        return [_fit(sz, c, anchor) for sz, c in zip(slip_sizes, box_cells)]
 
     best = None
-    for cols in range(1, n + 1):                      # bills on top, slip below
-        rows = -(-n // cols)
-        for split in range(30, 86):
-            cut = y0 + (y1 - y0 - GAP) * split / 100
-            cs = cells((x0, y0, x1, cut), cols, rows)
-            rb = [_fit(sz, c, "center") for sz, c in zip(bill_sizes, cs)]
-            rs = _fit(slip_size, (x0, cut + GAP, x1, y1), "bottom-right")
-            sc = score(rb, rs)
-            if best is None or sc > best[0]:
-                best = (sc, rb, rs)
-    for cols in range(2, n + 2):                      # one grid, the slip in the last (bottom-right) cell
-        rows = -(-(n + 1) // cols)
+    for cb in range(1, nb + 1):                       # bills on top, slips below
+        rb_rows = -(-nb // cb)
+        for cs in range(1, ns + 1):
+            rs_rows = -(-ns // cs)
+            for split in range(25, 86):
+                cut = y0 + (y1 - y0 - GAP) * split / 100
+                rb = [_fit(sz, c, "center") for sz, c in zip(bill_sizes, cells((x0, y0, x1, cut), cb, rb_rows))]
+                bottom = cells((x0, cut + GAP, x1, y1), cs, rs_rows)
+                rs = slips_in(bottom[len(bottom) - ns:] if ns > 1 else [(x0, cut + GAP, x1, y1)])
+                sc = mean_log(rb) + mean_log(rs)
+                if best is None or sc > best[0]:
+                    best = (sc, rb, rs)
+    for cols in range(2, nb + ns + 1):                # one grid, the slips in the last (bottom-right) cells
+        rows = -(-(nb + ns) // cols)
         cs = cells((x0, y0, x1, y1), cols, rows)
         rb = [_fit(sz, c, "center") for sz, c in zip(bill_sizes, cs)]
-        rs = _fit(slip_size, cs[-1], "bottom-right")
-        sc = score(rb, rs)
+        rs = slips_in(cs[len(cs) - ns:])
+        sc = mean_log(rb) + mean_log(rs)
         if sc > best[0]:
             best = (sc, rb, rs)
     return best[1], best[2]
 
 
 def page_plan(slip_ids: list[str], pairs: list[tuple], extra_bills: list[str] = ()) -> list[tuple]:
-    """Pages in order: ('slip', slip_id) for slips without a bill, then ('pair', (bill_id, ...), slip_id),
+    """Pages in order: ('slip', slip_id) for slips without a bill, then ('pair', (bill_id, ...), (slip_id, ...)),
     then ('bill', bill_id) for extra_bills (unpaired handwritten bills the user asked to include).
-    pairs [(bill_id or (bill_id, ...), slip_id)]: several bills share one page with their transfer slip."""
-    paired = {s for _, s in pairs}
+    pairs [(bill_id or (bill_id, ...), slip_id or (slip_id, ...))]: a group shares one page."""
+    paired = {x for _, ss in pairs for x in _bills(ss)}
     pages: list[tuple] = [("slip", s) for s in slip_ids if s not in paired]
-    pages += [("pair", _bills(b), s) for b, s in pairs]
+    pages += [("pair", _bills(b), _bills(ss)) for b, ss in pairs]
     pages += [("bill", b) for b in extra_bills]
     return pages
 
@@ -720,13 +751,14 @@ def build_pdf(pages: list[tuple], images: dict[str, bytes], longest: int = 1400)
             place(page[1], _fit(pic(page[1])[1], SINGLE_BOX, "center"))
         else:
             _, bill, slip = page
-            bs = _bills(bill)
-            if len(bs) == 1:
-                rb, rs = pair_layout(pic(bs[0])[1], pic(slip)[1])
-                rbs = [rb]
+            bs, ss = _bills(bill), _bills(slip)
+            if len(bs) == 1 and len(ss) == 1:      # one bill, one slip: the usual layout
+                rb, rs = pair_layout(pic(bs[0])[1], pic(ss[0])[1])
+                rbs, rss = [rb], [rs]
             else:
-                rbs, rs = group_layout([pic(b)[1] for b in bs], pic(slip)[1])
+                rbs, rss = group_layout([pic(b)[1] for b in bs], [pic(x)[1] for x in ss])
             for b, rb in zip(bs, rbs):
                 place(b, rb)
-            place(slip, rs, frame=True)   # thin grey edge: the white slip stays visible on white paper
+            for x, rs in zip(ss, rss):
+                place(x, rs, frame=True)   # thin grey edge: the white slip stays visible on white paper
     return bytes(pdf.output())
