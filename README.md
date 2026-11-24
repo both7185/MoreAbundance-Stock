@@ -203,22 +203,28 @@ Every picture on the page can be clicked to see it large (click again or ✕ to 
 4. **② ยังไม่มีคู่**: bills with no matching slip (fix the amount, or pick a slip by hand) and slips with no bill
    (pick a bill by hand). The hand-pick lists **every** slip / bill, also ones rejected with ✖ and ones already
    paired (they move to the new pair). ↔ switches a picture between slip and bill when it was sorted wrong.
-5. **➕ Groups** (several handwritten bills of one shop paid with one transfer): in the ➕ section under ② pick the slip
-   and all its bills, type each bill's amount if it is missing, and press ✅ จับคู่เป็นกลุ่ม. When 2-3 unpaired bills
-   have numbers that add up to the slip, the section offers that set (ใช้ชุดนี้). A bill can also join a slip that is
-   already paired straight from its ② card (➕ รวมกลุ่มกับบิลเขียนมือเดิม).
-6. **③ จับคู่แล้ว**: confirmed pairs and groups. The slip can be changed to any slip in the dropdown, or ↩️ ยกเลิกคู่ /
+5. **➕ Groups**: several handwritten bills of one shop paid with one transfer, **or** one handwritten bill paid with
+   several transfers (or several of each). In the ➕ section under ② pick the slips and the bills (both lists take
+   several). Every picture has its amount under it and can be edited there. ✅ จับคู่เป็นกลุ่ม only works when **both
+   totals are equal**; the line above it shows each total and the difference.
+   * When 2-3 unpaired bills add up to one picked slip, or 2-3 unpaired slips add up to one picked bill, the section
+     offers that set (ใช้ชุดนี้).
+   * From a ② card: a bill can join a slip that is already paired (➕ รวมกลุ่มกับบิลเขียนมือเดิม), and a slip can join
+     a bill that is already paired (➕ รวมกลุ่มกับบิลโอนเดิม).
+6. **③ จับคู่แล้ว**: confirmed pairs and groups, with both totals. A pair's slip can be changed to any slip in the
+   dropdown. ✏️ แก้กลุ่ม opens a group in the ➕ section to add or remove pictures or fix amounts; ↩️ ยกเลิกคู่ /
    ยกเลิกกลุ่ม sends them all back to ②.
 7. **④ ดาวน์โหลด PDF** (no order files): A4 portrait, like the Canva files. First every slip without a confirmed bill,
    one per page and centred, then one page per confirmed pair. Both groups follow the slip upload order. A tick box
    adds the unpaired bills at the end.
    On a pair page the bill is top-left and the slip bottom-right, **never covering each other**: the page is split
    side by side or top/bottom where the two pictures come out largest (`pair_layout`).
-   A group page puts the bills in a grid (e.g. two side by side on top) with the slip below at the right, or all in
-   one grid with the slip in the bottom-right cell, whichever is larger (`group_layout`); nothing covers anything.
+   A group page puts the bills in a grid (e.g. two side by side on top) with the slips below (one slip at the right,
+   several side by side), or all in one grid with the slips in the last cells, whichever is larger (`group_layout`);
+   nothing covers anything. A 1 bill + 1 slip page keeps the pair layout.
 8. **Order files** (the ใบรับรองแทนใบเสร็จ PDFs made in Google Sheets; text PDFs, not scans): each file's lines
    (name + amount, down to the รวม row) are read, and each confirmed pair / group / lone slip is put on the line with
-   its amount. Every order file gets **its own PDF**, with the receipts in the file's line order.
+   its amount (a group with several slips counts as their total). Every order file gets **its own PDF**, with the receipts in the file's line order.
    * An amount found in several files (or more receipts than lines with that amount) is shown with its pictures
      and a ⚠️ เลือกไฟล์ dropdown; receipts whose amount is in no file can be added to a file by hand (they go last).
    * Lines with no receipt are listed (❌ in each file's table).
