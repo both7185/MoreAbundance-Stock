@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import io
 import json
+import os
 import re
 from decimal import Decimal
 from collections import OrderedDict
@@ -45,6 +46,31 @@ def po_tag(filename: str) -> str:
         if t and not t.isdigit():
             parts.append(t)
     return " ".join(parts)
+
+
+def split_tags(filenames: list[str]) -> dict[str, str]:
+    """Column tags for files that would share one column but are shown apart.
+
+    The tag is what is left of each file name after the words all of them share,
+    e.g. 'PO 27 พ.ย. 69 นรพ.มื้อเย็น' / 'PO 27 พ.ย. 69 มื้อเย็น' -> 'นรพ.มื้อเย็น' / 'มื้อเย็น'.
+    One file may keep '' (the normal column); any other empty or repeated tag gets a number.
+    """
+    stems = [re.sub(r"\.pdf$", "", n.strip(), flags=re.IGNORECASE) for n in filenames]
+    prefix = os.path.commonprefix(stems)
+    if not all(st == prefix or st[len(prefix):len(prefix) + 1] in (" ", "") for st in stems):
+        prefix = prefix[: prefix.rfind(" ") + 1]         # cut back to a whole word
+    out: dict[str, str] = {}
+    used: set[str] = set()
+    for name, st in zip(filenames, stems):
+        tag = re.sub(r"\s+", " ", st[len(prefix):].replace("(", " ").replace(")", " ")).strip(" -")
+        tag = re.sub(r"\s+", " ", UPDATE_RE.sub(" ", tag)).strip(" -")
+        base, n = tag, 1
+        while tag in used:
+            n += 1
+            tag = f"{base} {n}".strip() if base else f"ไฟล์ {n}"
+        used.add(tag)
+        out[name] = tag
+    return out
 
 
 def is_update(filename: str) -> bool:
@@ -131,6 +157,7 @@ def aggregate(
     catalog: dict,
     product_lookup: dict | None = None,
     apply_aliases: bool = True,
+    tag_for_po: dict[str, str] | None = None,
 ) -> Summary:
     """
     Group by (item name, unit, unit price); split quantity by column (date + file-name tag).
@@ -150,7 +177,8 @@ def aggregate(
     order_of: dict[tuple, int] = {}
 
     for po in pos:
-        d = (date_for_po[po.filename], po_tag(po.filename))
+        tag = (tag_for_po or {}).get(po.filename)
+        d = (date_for_po[po.filename], po_tag(po.filename) if tag is None else tag)
         files_by_col.setdefault(d, []).append(po.filename)
         if po.po_number and po.po_number not in po_numbers:
             po_numbers.append(po.po_number)

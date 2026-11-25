@@ -46,7 +46,8 @@ from products import (
     save_products_local,
 )
 from report_builder import (
-    aggregate, build_workbook, col_label, date_range_label, is_update, latest_prices, load_catalog, po_tag, price_check,
+    aggregate, build_workbook, col_label, col_sort_key, date_range_label, is_update, latest_prices, load_catalog, po_tag,
+    price_check, split_tags,
 )
 from report_pdf import build_pdf
 from sup_codes import (
@@ -251,6 +252,51 @@ def persist_sup(data: dict, message: str, products: list[dict] | None = None) ->
 
 catalog = load_catalog()
 
+def same_column_choice(pos: list[PurchaseOrder], date_for_po: dict) -> dict[str, str]:
+    """Several files that land in one column (same date, no different bracket word):
+    warn and let the user keep them summed in one column or give each file its own column.
+    Returns the column tag to use for each split file (files left out keep po_tag)."""
+    groups: dict[tuple, list[str]] = {}
+    for p in pos:
+        groups.setdefault((date_for_po[p.filename], po_tag(p.filename)), []).append(p.filename)
+    shared = {col: sorted(names) for col, names in groups.items() if len(names) > 1}
+    if not shared:
+        return {}
+
+    st.warning(f"⚠️ มี {len(shared)} คอลัมน์ที่มีหลายไฟล์วันที่เดียวกัน — เลือกได้ว่าจะ **รวมเป็นคอลัมน์เดียว** "
+               "(บวกจำนวนเข้าด้วยกัน) หรือ **แยกคอลัมน์** ไฟล์ละคอลัมน์")
+    tag_for_po: dict[str, str] = {}
+    for col in sorted(shared, key=col_sort_key):
+        names = shared[col]
+        with st.container(border=True):
+            st.markdown(f"**{col_label(col)}** — {len(names)} ไฟล์: " + ", ".join(names))
+            if any(is_update(n) for n in names):
+                st.caption("มีฉบับอัพเดทใหม่ในกลุ่มนี้ — ถ้าเป็นฉบับเดิมกับฉบับอัพเดท ให้ลบฉบับเดิมออก ไม่อย่างนั้นจำนวนจะถูกนับซ้ำ")
+            key = f"samecol_{col[0]}_{col[1]}_" + "|".join(names)
+            choice = st.radio("ไฟล์กลุ่มนี้", ["แยกคอลัมน์", "รวมเป็นคอลัมน์เดียว"], horizontal=True,
+                              key=key, label_visibility="collapsed")
+            if choice != "แยกคอลัมน์":
+                continue
+            st.caption("ชื่อในวงเล็บของแต่ละคอลัมน์ (แก้ได้ • เว้นว่างได้ 1 ไฟล์ = คอลัมน์ปกติของวันนั้น)")
+            auto = split_tags(names)
+            cols = st.columns(len(names))
+            typed = {}
+            for c, n in zip(cols, names):
+                default = " ".join(t for t in (col[1], auto[n]) if t)
+                typed[n] = c.text_input(n, value=default, key=f"{key}_tag_{n}").strip()
+            used: set[str] = set()
+            for n in names:   # two files with the same name would merge again -> number the repeat
+                tag, i = typed[n], 1
+                while tag in used:
+                    i += 1
+                    tag = f"{typed[n]} {i}".strip()
+                used.add(tag)
+                tag_for_po[n] = tag
+            labels = [col_label((col[0], tag_for_po[n])) for n in names]
+            st.caption("จะได้คอลัมน์: " + " • ".join(labels))
+    return tag_for_po
+
+
 def daily_section() -> None:
     st.caption("อัปโหลดใบสั่งซื้อ (PDF หรือ .zip) กี่ไฟล์ก็ได้ → ตรวจสอบ → ดาวน์โหลด Excel ที่มีสูตรคำนวณ")
     uploads = st.file_uploader("ไฟล์ใบสั่งซื้อ (PDF / ZIP)", type=["pdf", "zip"],
@@ -314,18 +360,14 @@ def daily_section() -> None:
             return
         date_for_po[row["ไฟล์"]] = pd.Timestamp(d).date()
 
+    tag_for_po = same_column_choice(pos, date_for_po)
+
     # --------------------------------------------------------------------------- #
     # Step 2: preview — category + order come from the product list (🗂️ tab)
     # --------------------------------------------------------------------------- #
     sup = current_sup()
     products = current_products(sup)
-    summary = aggregate(pos, date_for_po, catalog, build_lookup(products), apply_aliases)
-
-    # an original PO and its "(อัพเดทใหม่)" version in the same column would be counted twice
-    for col, names in summary.files_by_col.items():
-        if len(names) > 1 and any(is_update(n) for n in names):
-            st.warning(f"คอลัมน์ {col_label(col)} มีหลายไฟล์: " + ", ".join(names) +
-                       " — ถ้าเป็นฉบับเดิมกับฉบับอัพเดทใหม่ ให้ลบฉบับเดิมออก ไม่อย่างนั้นจำนวนจะถูกนับซ้ำ")
+    summary = aggregate(pos, date_for_po, catalog, build_lookup(products), apply_aliases, tag_for_po)
 
     st.subheader(f"2. ตารางสรุป — {date_range_label(summary.dates)}")
     preview_box = st.container()   # filled after the ทุน editor below, so typed costs show at once
